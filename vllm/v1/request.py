@@ -86,6 +86,10 @@ class Request:
         self.spec_token_ids: list[int] = []
         self.num_computed_tokens = 0
         self.cache_salt: Optional[str] = cache_salt
+        
+        # AutoDeco: Per-token dynamic sampling parameters
+        self._output_temperatures: list[float] = []
+        self._output_top_ps: list[float] = []
 
         # Multi-modal related
         self.mm_features = mm_features or []
@@ -156,6 +160,24 @@ class Request:
 
         if self.get_hash_new_full_blocks is not None:
             self.block_hashes.extend(self.get_hash_new_full_blocks())
+    
+    def append_temps(self, temp: float) -> None:
+        """AutoDeco: Append temperature for a generated token."""
+        self._output_temperatures.append(temp)
+    
+    def append_top_p(self, top_p: float) -> None:
+        """AutoDeco: Append top_p for a generated token."""
+        self._output_top_ps.append(top_p)
+    
+    @property
+    def output_temperatures(self) -> list[float]:
+        """AutoDeco: Get all output temperatures."""
+        return self._output_temperatures
+    
+    @property
+    def output_top_ps(self) -> list[float]:
+        """AutoDeco: Get all output top_ps."""
+        return self._output_top_ps
 
     @property
     def is_output_corrupted(self) -> bool:

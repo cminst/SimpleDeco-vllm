@@ -61,6 +61,8 @@ class LogitsProcessor(CustomOp):
         sampling_metadata: Optional[SamplingMetadata] = None,
         embedding_bias: Optional[torch.Tensor] = None,
         prune_hidden_states: bool = True,
+        temp_head=None,
+        top_p_head=None,
     ) -> Optional[torch.Tensor]:
         if self.logits_as_input:
             logits = hidden_states
@@ -71,6 +73,15 @@ class LogitsProcessor(CustomOp):
 
             # Get the logits for the next tokens.
             logits = self._get_logits(hidden_states, lm_head, embedding_bias)
+        # AutoDeco
+        top_p = None
+        temp = None
+        if temp_head is not None:
+            temp = temp_head(hidden_states)
+        if top_p_head is not None:
+            # top_p = torch.sigmoid(top_p_head(torch.cat([hidden_states, temp], dim=-1)))
+            # top_p = top_p_head(torch.cat([hidden_states, temp], dim=-1))
+            top_p = top_p_head(hidden_states, temp, logits)
         if logits is not None:
             if self.soft_cap is not None:
                 logits = logits / self.soft_cap
@@ -85,7 +96,7 @@ class LogitsProcessor(CustomOp):
                 sampling_metadata.seq_groups is not None:
                 logits = _apply_logits_processors(logits, sampling_metadata)
 
-        return logits
+        return (logits, temp, top_p) if temp_head is not None else logits
 
     def _gather_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """gather/all-gather the logits tensor across model parallel group."""

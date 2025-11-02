@@ -8,6 +8,7 @@ from .interfaces import (HasInnerState, SupportsLoRA, SupportsMultiModal,
 from .interfaces_base import (VllmModelForPooling, VllmModelForTextGeneration,
                               is_pooling_model, is_text_generation_model)
 from .registry import ModelRegistry
+from .autodeco import AutoDecoModelForCausalLM
 
 __all__ = [
     "ModelRegistry",

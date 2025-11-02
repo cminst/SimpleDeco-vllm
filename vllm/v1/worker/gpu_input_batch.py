@@ -46,9 +46,18 @@ class CachedRequestState:
     mrope_position_delta: Optional[int] = None
 
     lora_request: Optional[LoRARequest] = None
+    
+    # AutoDeco: Store original user sampling params (before any AutoDeco scaling)
+    original_temperature: Optional[float] = None
+    original_top_p: Optional[float] = None
 
     def __post_init__(self):
         self.num_prompt_tokens = len(self.prompt_token_ids)
+        
+        # AutoDeco: Save original user-specified temperature and top_p
+        if self.sampling_params is not None:
+            self.original_temperature = self.sampling_params.temperature
+            self.original_top_p = self.sampling_params.top_p
 
     @property
     def num_tokens(self) -> int:

@@ -2099,22 +2099,102 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                       kv_connector_output)
 
                 sample_hidden_states = hidden_states[logits_indices]
-                logits = self.model.compute_logits(sample_hidden_states, None)
+
+                # AutoDeco: Compute logits and dynamic sampling parameters
+                dynamic_temps, dynamic_top_ps = None, None
+                compute_results = self.model.compute_logits(sample_hidden_states, None)
+                if isinstance(compute_results, tuple):
+                    # AutoDeco model returns (logits, temperatures, top_ps)
+                    logits, dynamic_temps, dynamic_top_ps = compute_results
+                else:
+                    # Standard model returns only logits
+                    logits = compute_results
             if broadcast_pp_output:
                 model_output_broadcast_data = {
                     "logits": logits.contiguous(),
                 } if logits is not None else {}
+                # AutoDeco: Also broadcast dynamic parameters in multi-GPU setup
+                if dynamic_temps is not None:
+                    model_output_broadcast_data["temps"] = dynamic_temps.contiguous()
+                if dynamic_top_ps is not None:
+                    model_output_broadcast_data["top_ps"] = dynamic_top_ps.contiguous()
+                    
                 model_output_broadcast_data = get_pp_group(
                 ).broadcast_tensor_dict(model_output_broadcast_data,
                                         src=len(get_pp_group().ranks) - 1)
                 assert model_output_broadcast_data is not None
                 logits = model_output_broadcast_data["logits"]
+                if "temps" in model_output_broadcast_data:
+                    dynamic_temps = model_output_broadcast_data["temps"]
+                if "top_ps" in model_output_broadcast_data:
+                    dynamic_top_ps = model_output_broadcast_data["top_ps"]
 
             # Apply structured output bitmasks if present
             if scheduler_output.grammar_bitmask is not None:
                 self.apply_grammar_bitmask(scheduler_output, logits)
 
         with record_function_or_nullcontext("Sample"):
+            # AutoDeco: Apply dynamic sampling parameters with user control
+            final_temps_for_output = None
+            final_top_ps_for_output = None
+            
+            if dynamic_temps is not None and dynamic_top_ps is not None:
+                # Check if this is an AutoDeco model
+                is_autodeco = (hasattr(self.model_config, 'hf_config') and 
+                              hasattr(self.model_config.hf_config, 'model_type') and
+                              self.model_config.hf_config.model_type == 'autodeco')
+                
+                if is_autodeco:
+                    # Ensure proper shape for sampling metadata
+                    # dynamic_temps and dynamic_top_ps have shape [num_reqs, 1]
+                    # sampling_metadata expects [num_reqs]
+                    dynamic_temps_squeezed = dynamic_temps.squeeze(-1)
+                    dynamic_top_ps_squeezed = dynamic_top_ps.squeeze(-1)
+                    
+                    num_reqs = dynamic_temps_squeezed.shape[0]
+                    device = dynamic_temps_squeezed.device
+                    
+                    # Get ORIGINAL user-specified parameters from CachedRequestState
+                    # NOT from sampling_metadata (which may have been modified in previous steps)
+                    user_temps_list = []
+                    user_top_ps_list = []
+                    
+                    for req_id in self.input_batch.req_ids:
+                        req_state = self.requests[req_id]
+                        # Get original user parameters (saved at request creation)
+                        orig_temp = req_state.original_temperature
+                        orig_top_p = req_state.original_top_p
+                        
+                        user_temps_list.append(orig_temp if orig_temp is not None else 0.0)
+                        user_top_ps_list.append(orig_top_p if orig_top_p is not None else 1.0)
+                    
+                    user_temps = torch.tensor(user_temps_list, device=device, dtype=dynamic_temps_squeezed.dtype)
+                    user_top_ps = torch.tensor(user_top_ps_list, device=device, dtype=dynamic_top_ps_squeezed.dtype)
+                    
+                    # Apply hybrid logic:
+                    # 1. If user temperature == 0, use greedy sampling (ignore AutoDeco)
+                    # 2. Otherwise, multiply AutoDeco predictions by user values
+                    
+                    final_temps = torch.where(
+                        user_temps == 0.0,
+                        torch.zeros_like(user_temps),  # Greedy: temp=0
+                        dynamic_temps_squeezed * user_temps  # Hybrid: AutoDeco × user
+                    )
+                    
+                    # For top_p: always apply hybrid (AutoDeco × user, clamped)
+                    # Even for greedy, we compute it (though it won't be used)
+                    final_top_ps = torch.clamp(
+                        dynamic_top_ps_squeezed * user_top_ps, 0.0, 1.0
+                    )
+                    
+                    # Override the sampling metadata with hybrid parameters
+                    self.input_batch.sampling_metadata.temperature = final_temps
+                    self.input_batch.sampling_metadata.top_p = final_top_ps
+                    
+                    # Save final values (not raw AutoDeco predictions) for output
+                    final_temps_for_output = final_temps
+                    final_top_ps_for_output = final_top_ps
+            
             sampler_output = self._sample(logits, spec_decode_metadata)
 
         with record_function_or_nullcontext("Bookkeep"):
@@ -2129,6 +2209,15 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             ) = self._bookkeeping_sync(scheduler_output, sampler_output,
                                        logits, hidden_states,
                                        num_scheduled_tokens)
+            
+            # AutoDeco: Convert final (hybrid) parameters to CPU for output
+            dynamic_temps_cpu = None
+            dynamic_top_ps_cpu = None
+            if final_temps_for_output is not None:
+                # Use the final hybrid values (AutoDeco * user), not raw AutoDeco predictions
+                dynamic_temps_cpu = final_temps_for_output.cpu().tolist()
+            if final_top_ps_for_output is not None:
+                dynamic_top_ps_cpu = final_top_ps_for_output.cpu().tolist()
 
         if self.speculative_config:
             assert spec_decode_common_attn_metadata is not None
@@ -2156,6 +2245,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pooler_output=[],
             kv_connector_output=kv_connector_output,
             num_nans_in_logits=num_nans_in_logits,
+            # AutoDeco: Add dynamic sampling parameters to output
+            temperatures=dynamic_temps_cpu,
+            top_ps=dynamic_top_ps_cpu,
         )
 
         if not self.use_async_scheduling:
@@ -2846,7 +2938,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # To avoid breaking the sampler, we use a random tensor here instead.
         hidden_states = torch.rand_like(hidden_states)
 
-        logits = self.model.compute_logits(hidden_states, None)
+        # AutoDeco
+        outputs = self.model.compute_logits(hidden_states, None)
+        if isinstance(outputs, tuple):
+            logits, temps, top_p = outputs
+        else:
+            logits = outputs
         num_reqs = logits.size(0)
 
         dummy_tensors = lambda v: torch.full(

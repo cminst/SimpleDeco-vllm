@@ -118,6 +118,10 @@ class EngineCoreOutput(
     # The number of tokens with prefix cache hits.
     num_cached_tokens: int = 0
 
+    # AutoDeco
+    temps: Optional[list[float]] = None
+    top_p: Optional[list[float]] = None
+    
     @property
     def finished(self) -> bool:
         return self.finish_reason is not None

@@ -113,6 +113,12 @@ class ModelRunnerOutput:
 
     # req_id -> num_nans_in_logits
     num_nans_in_logits: Optional[dict[str, int]] = None
+    
+    # AutoDeco: Per-request dynamic sampling parameters
+    # [num_reqs] - temperature values used for each request
+    temperatures: Optional[list[float]] = None
+    # [num_reqs] - top_p values used for each request
+    top_ps: Optional[list[float]] = None
 
 
 # ModelRunnerOutput wrapper for async scheduling.

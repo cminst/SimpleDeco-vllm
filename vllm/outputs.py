@@ -38,6 +38,8 @@ class CompletionOutput:
             to stop, None if the completion finished for some other reason
             including encountering the EOS token.
         lora_request: The LoRA request that was used to generate the output.
+        temperatures: Optional list of dynamic temperatures for each token (AutoDeco).
+        top_ps: Optional list of dynamic top-p values for each token (AutoDeco).
     """
 
     index: int
@@ -48,6 +50,8 @@ class CompletionOutput:
     finish_reason: Optional[str] = None
     stop_reason: Union[int, str, None] = None
     lora_request: Optional[LoRARequest] = None
+    temperatures: Optional[list[float]] = None
+    top_ps: Optional[list[float]] = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None

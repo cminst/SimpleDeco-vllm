@@ -34,11 +34,14 @@ from .interfaces import (has_inner_state, has_noops, is_attention_free,
 from .interfaces_base import (get_default_pooling_type, is_pooling_model,
                               is_text_generation_model)
 
+from .templlm_auto import AutoDecoModelForCausalLM
+
 logger = init_logger(__name__)
 
 # yapf: disable
 _TEXT_GENERATION_MODELS = {
     # [Decoder-only]
+    "AutoDecoModelForCausalLM": ("autodeco", "AutoDecoModelForCausalLM"),
     "ApertusForCausalLM": ("apertus", "ApertusForCausalLM"),
     "AquilaModel": ("llama", "LlamaForCausalLM"),
     "AquilaForCausalLM": ("llama", "LlamaForCausalLM"),  # AquilaChat2

@@ -118,6 +118,10 @@ class RequestState:
 
         self.stats = RequestStateStats(
             arrival_time=arrival_time) if log_stats else None
+        
+        # AutoDeco: Store per-token dynamic sampling parameters
+        self.output_temperatures: list[float] = []
+        self.output_top_ps: list[float] = []
 
     @classmethod
     def from_new_request(
@@ -270,6 +274,22 @@ class RequestState:
         if delta and logprobs:
             logprobs = logprobs[-len(token_ids):]
 
+        # AutoDeco: Get temperatures and top_ps for this output
+        # In delta mode, only include the new tokens' parameters
+        temps_for_output = None
+        top_ps_for_output = None
+
+        if self.output_temperatures:
+            if delta:
+                temps_for_output = self.output_temperatures[-len(token_ids):]
+            else:
+                temps_for_output = self.output_temperatures.copy()
+        if self.output_top_ps:
+            if delta:
+                top_ps_for_output = self.output_top_ps[-len(token_ids):]
+            else:
+                top_ps_for_output = self.output_top_ps.copy()
+        
         return CompletionOutput(
             index=self.request_index,
             text=text,
@@ -277,7 +297,9 @@ class RequestState:
             logprobs=logprobs,
             cumulative_logprob=self.logprobs_processor.cumulative_logprob,
             finish_reason=str(finish_reason) if finished else None,
-            stop_reason=stop_reason if finished else None)
+            stop_reason=stop_reason if finished else None,
+            temperatures=temps_for_output,
+            top_ps=top_ps_for_output)
 
     def _new_pooling_output(
         self,
@@ -412,6 +434,12 @@ class OutputProcessor:
             kv_transfer_params = engine_core_output.kv_transfer_params
             req_state.num_cached_tokens = engine_core_output.num_cached_tokens
             req_state.is_prefilling = False
+            
+            # AutoDeco: Collect per-token temperatures and top_ps
+            if engine_core_output.temps is not None:
+                req_state.output_temperatures.extend(engine_core_output.temps)
+            if engine_core_output.top_p is not None:
+                req_state.output_top_ps.extend(engine_core_output.top_p)
 
             if pooling_output is None:
                 assert req_state.detokenizer is not None
