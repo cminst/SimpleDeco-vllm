@@ -15,7 +15,7 @@ def find_cuda_init(fn: Callable[[], object]) -> None:
     """
     from torch.cuda import _lazy_init
 
-    stack = None
+    stack = Nonea
 
     def wrapper():
         nonlocal stack
