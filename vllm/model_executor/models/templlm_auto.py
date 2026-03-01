@@ -19,18 +19,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""AutoDeco vLLM implementation. Supports temperature and top-p prediction heads on top of any AutoModelForCausalLM"""
-from typing import Optional, Tuple, Union, Dict, Any
-import importlib
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+"""AutoDeco vLLM implementation for training temperature and top-p heads."""
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple, Union
 
-try:
-    from typing import Unpack
-except ImportError:
-    from typing_extensions import Unpack
+import torch
+import torch.nn.functional as F
 
 from transformers import (
     AutoModelForCausalLM,
@@ -41,6 +38,8 @@ from transformers import (
 )
 from transformers.utils import ModelOutput, logging
 from transformers.cache_utils import Cache
+
+from .autodeco_heads import TempHead, TopPHead
 
 logger = logging.get_logger(__name__)
 
@@ -76,9 +75,8 @@ def load_balancing_loss_func(
     if gate_logits is None or not isinstance(gate_logits, tuple):
         return 0
 
-    if isinstance(gate_logits, tuple):
-        compute_device = gate_logits[0].device
-        concatenated_gate_logits = torch.cat([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
+    compute_device = gate_logits[0].device
+    concatenated_gate_logits = torch.cat([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
 
     routing_weights = torch.nn.functional.softmax(concatenated_gate_logits, dim=-1)
 
@@ -125,66 +123,6 @@ def load_balancing_loss_func(
     overall_loss = torch.sum(tokens_per_expert * router_prob_per_expert.unsqueeze(0))
     return overall_loss * num_experts
 
-class TopPHead(nn.Module):
-    """Top-P prediction head with enhanced features"""
-
-    def __init__(self, hidden_size, vocab_size=None, use_enhanced_features=True):
-        super().__init__()
-        self.use_enhanced_features = use_enhanced_features
-        input_dim = hidden_size + 1 + (4 if use_enhanced_features else 0)
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-            nn.Sigmoid(),
-        )
-        self.vocab_size = vocab_size
-
-    def compute_prob_stats(self, logits):
-        """Compute probability distribution statistics"""
-        probs = torch.softmax(logits, dim=-1)
-        max_prob = probs.max(dim=-1, keepdim=True)[0]
-        log_probs = torch.log(probs + 1e-8)
-        entropy = -(probs * log_probs).sum(dim=-1, keepdim=True)
-        prob_var = probs.var(dim=-1, keepdim=True)
-        top5_probs, _ = torch.topk(probs, min(5, probs.size(-1)), dim=-1)
-        top5_sum = top5_probs.sum(dim=-1, keepdim=True)
-        return torch.cat([max_prob, entropy, prob_var, top5_sum], dim=-1)
-
-    def forward(self, hidden_states, temp_logits, unscaled_logits=None):
-        batch_size, seq_len, hidden_size = hidden_states.shape
-        if self.use_enhanced_features:
-            features = [hidden_states, temp_logits]
-            if unscaled_logits is not None:
-                scaled_logits = unscaled_logits / (temp_logits + 1e-8)
-                prob_stats = self.compute_prob_stats(scaled_logits)
-                features.append(prob_stats)
-            else:
-                prob_stats = torch.zeros(batch_size, seq_len, 4, device=hidden_states.device)
-                features.append(prob_stats)
-            combined_features = torch.cat(features, dim=-1)
-        else:
-            combined_features = torch.cat([hidden_states, temp_logits], dim=-1)
-        return self.mlp(combined_features)
-
-
-class TempHead(nn.Module):
-    """Temperature prediction head"""
-
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, hidden_states):
-        sigmoid_output = self.mlp(hidden_states)
-        return sigmoid_output * 2
-
-
 @dataclass
 class AutoDecoOutputWithPast(ModelOutput):
     """
@@ -211,23 +149,30 @@ class AutoDecoModelForCausalLMConfig(PretrainedConfig):
 
     def __init__(
         self,
-        enable_temperature_head: bool=True,
-        enable_top_p_head: bool=True,
-        use_enhanced_features: bool=True,
-        base_model_name_or_path: str=None,
-        **kwargs  # All base model config parameters
+        enable_temperature_head: bool = True,
+        enable_top_p_head: bool = True,
+        use_enhanced_features: bool = True,
+        base_model_name_or_path: Optional[str] = None,
+        train_temp: bool = False,
+        train_top_p: bool = False,
+        **kwargs,  # All base model config parameters
     ):
         super().__init__(**kwargs)
+        hidden_size = kwargs.get("hidden_size")
+
         self.enable_temperature_head = enable_temperature_head
         self.enable_top_p_head = enable_top_p_head
-        self.top_p_hidden_size = kwargs.get('hidden_size', None)
-        self.temperature_hidden_size = kwargs.get('hidden_size', None)
+        self.top_p_hidden_size = hidden_size
+        self.temperature_hidden_size = hidden_size
         self.use_enhanced_features = use_enhanced_features
+        self.train_temp = train_temp
+        self.train_top_p = train_top_p
         self.base_model_name_or_path = base_model_name_or_path
-        self._name_or_path = base_model_name_or_path
+        if base_model_name_or_path is not None:
+            self._name_or_path = base_model_name_or_path
 
         # Important! Need to preserve base_model_type from config.json
-        self.base_model_type = kwargs.get('base_model_type', None)
+        self.base_model_type = kwargs.get("base_model_type")
 
 class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
     """
@@ -251,7 +196,9 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
             **kwargs: Additional arguments (for backward compatibility)
         """
         if not isinstance(config, AutoDecoModelForCausalLMConfig):
-            raise ValueError(f"config must be an AutoDecoConfig instance, got {type(config)}")
+            raise ValueError(
+                f"config must be an AutoDecoModelForCausalLMConfig instance, got {type(config)}"
+            )
 
         super().__init__(config)
 
@@ -265,46 +212,37 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         logger.info(f"Base model type: {config.base_model_type}")
 
         # For loading from pretrained AutoDeco checkpoint, base model might already be loaded
-        if 'load_base_model' in kwargs and not kwargs['load_base_model']:
+        if kwargs.get("load_base_model") is False:
             # This will be used when loading from a saved AutoDeco checkpoint
             logger.info("Skipping base model loading (will be loaded from checkpoint)")
             # Create a placeholder that will be populated by from_pretrained
             self.llm = None
         else:
+            base_model_args = kwargs.get("base_model_args", ())
             self.llm = AutoModelForCausalLM.from_pretrained(
                 base_model_path,
-                **kwargs.get('base_model_kwargs', {})
+                *base_model_args,
+                **kwargs.get("base_model_kwargs", {}),
             )
 
         # Get hidden size from config
         hidden_size = config.hidden_size
 
         # Initialize AutoDeco heads
-        self.temp_head = TempHead(hidden_size)
-        self.top_p_head = TopPHead(
-            hidden_size,
-            use_enhanced_features=config.use_enhanced_features
-        )
+        self._init_heads(hidden_size, config.use_enhanced_features)
 
         # Training flags
-        self.train_temp = config.train_temp
-        self.train_top_p = config.train_top_p
+        self.train_temp = getattr(config, "train_temp", False)
+        self.train_top_p = getattr(config, "train_top_p", False)
 
         # Check if base model is MoE
-        self.is_moe = hasattr(config, 'num_local_experts') or \
-                      hasattr(config, 'num_experts')
-
-        if self.is_moe:
-            self.router_aux_loss_coef = getattr(config, 'router_aux_loss_coef', 0.01)
-            self.num_experts = getattr(config, 'num_local_experts', None) or \
-                              getattr(config, 'num_experts', None)
-            self.num_experts_per_tok = getattr(config, 'num_experts_per_tok', 2)
+        self._init_moe_config()
 
         # Copy _no_split_modules from base model if available
-        if self.llm is not None and hasattr(self.llm, '_no_split_modules'):
+        if self.llm is not None and hasattr(self.llm, "_no_split_modules"):
             self._no_split_modules = self.llm._no_split_modules
 
-        logger.info(f"AutoDeco model initialized:")
+        logger.info("AutoDeco model initialized:")
         logger.info(f"  - base_model_type={config.base_model_type}, base_model_name_or_path={config.base_model_name_or_path}")
         logger.info(f"  - train_temp={self.train_temp}, train_top_p={self.train_top_p}")
 
@@ -317,10 +255,80 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
                 heads.append("top_p_head")
             logger.info(f"  - Training mode: AutoDeco heads ({', '.join(heads)})")
         else:
-            logger.info(f"  - Training mode: Base LLM (standard language modeling)")
+            logger.info("  - Training mode: Base LLM (standard language modeling)")
 
         logger.info(f"  - is_moe={self.is_moe}")
         logger.info(f"  - hidden_size={hidden_size}")
+
+    def _init_heads(self, hidden_size: int, use_enhanced_features: bool) -> None:
+        self.temp_head = TempHead(hidden_size)
+        self.top_p_head = TopPHead(
+            hidden_size,
+            use_enhanced_features=use_enhanced_features,
+        )
+
+    def _init_moe_config(self) -> None:
+        config = self.config
+        self.is_moe = hasattr(config, "num_local_experts") or hasattr(config, "num_experts")
+        if self.is_moe:
+            self.router_aux_loss_coef = getattr(config, "router_aux_loss_coef", 0.01)
+            self.num_experts = getattr(config, "num_local_experts", None) or getattr(config, "num_experts", None)
+            self.num_experts_per_tok = getattr(config, "num_experts_per_tok", 2)
+
+    @staticmethod
+    def _flatten_heads_state_dict(temp_head_state: dict, top_p_head_state: dict) -> dict:
+        flat_state_dict = {}
+        for key, value in temp_head_state.items():
+            flat_state_dict[f"temp_head.{key}"] = value
+        for key, value in top_p_head_state.items():
+            flat_state_dict[f"top_p_head.{key}"] = value
+        return flat_state_dict
+
+    @staticmethod
+    def _split_prefixed_heads_state_dict(flat_state_dict: dict) -> tuple[dict, dict]:
+        temp_head_state = {}
+        top_p_head_state = {}
+
+        for key, value in flat_state_dict.items():
+            if key.startswith("temp_head."):
+                temp_head_state[key[len("temp_head."):]] = value
+            elif key.startswith("top_p_head."):
+                top_p_head_state[key[len("top_p_head."):]] = value
+
+        return temp_head_state, top_p_head_state
+
+    @classmethod
+    def _to_autodeco_config(
+        cls,
+        config: PretrainedConfig,
+        pretrained_model_name_or_path: str,
+        train_temp: Optional[bool],
+        train_top_p: Optional[bool],
+        use_enhanced_features: Optional[bool],
+    ) -> AutoDecoModelForCausalLMConfig:
+        if isinstance(config, AutoDecoModelForCausalLMConfig):
+            autodeco_config = config
+        else:
+            config_dict = config.to_dict() if hasattr(config, "to_dict") else {}
+            base_model_type = config_dict.pop("model_type", getattr(config, "model_type", None))
+            autodeco_config = AutoDecoModelForCausalLMConfig(
+                **config_dict,
+                base_model_name_or_path=pretrained_model_name_or_path,
+                base_model_type=base_model_type,
+            )
+
+        if autodeco_config.base_model_name_or_path is None:
+            autodeco_config.base_model_name_or_path = pretrained_model_name_or_path
+            autodeco_config._name_or_path = pretrained_model_name_or_path
+
+        if train_temp is not None:
+            autodeco_config.train_temp = train_temp
+        if train_top_p is not None:
+            autodeco_config.train_top_p = train_top_p
+        if use_enhanced_features is not None:
+            autodeco_config.use_enhanced_features = use_enhanced_features
+
+        return autodeco_config
 
     @classmethod
     def from_pretrained(
@@ -328,10 +336,10 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         pretrained_model_name_or_path: str,
         *model_args,
         config: Optional[AutoDecoModelForCausalLMConfig] = None,
-        train_temp: bool = None,
-        train_top_p: bool = None,
-        use_enhanced_features: bool = None,
-        **kwargs
+        train_temp: Optional[bool] = None,
+        train_top_p: Optional[bool] = None,
+        use_enhanced_features: Optional[bool] = None,
+        **kwargs,
     ):
         """
         Load AutoDeco model from either:
@@ -346,173 +354,98 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
             use_enhanced_features: Whether to use enhanced features (for new models)
             **kwargs: Additional arguments passed to model loading
         """
-        from pathlib import Path
-        import os
+        config_load_keys = (
+            "cache_dir",
+            "force_download",
+            "local_files_only",
+            "proxies",
+            "revision",
+            "subfolder",
+            "token",
+            "trust_remote_code",
+            "use_auth_token",
+        )
+        config_kwargs = {key: kwargs[key] for key in config_load_keys if key in kwargs}
 
-        is_autodeco_checkpoint = False
+        if config is None:
+            config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **config_kwargs)
 
-        # Check if config was already provided (by AutoModelForCausalLM.from_pretrained)
-        if config is not None:
-            logger.info(f"Config already provided: model_type={config.model_type}")
-            # Check if it's an AutoDeco config
-            if isinstance(config, AutoDecoModelForCausalLMConfig) and config.model_type == "autodeco":
-                is_autodeco_checkpoint = True
-                logger.info("  - Detected AutoDeco checkpoint (config auto-loaded by transformers)")
-                logger.info(f"  - base_model_type={config.base_model_type}, base_model_name_or_path={config.base_model_name_or_path}")
-            else:
-                is_autodeco_checkpoint = False
-        else:
-            # Config not provided, try to load it ourselves
-            config_path = Path(pretrained_model_name_or_path) / "config.json" \
-                          if os.path.isdir(pretrained_model_name_or_path) else None
+        is_autodeco_checkpoint = getattr(config, "model_type", None) == "autodeco"
+        config = cls._to_autodeco_config(
+            config=config,
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            train_temp=train_temp,
+            train_top_p=train_top_p,
+            use_enhanced_features=use_enhanced_features,
+        )
 
-            if config_path and config_path.exists():
-                # Try to load as AutoDecoConfig
-                loaded_config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
-                if loaded_config.model_type == "autodeco":
-                    config = loaded_config
-                    is_autodeco_checkpoint = True
-                    logger.info("Loading from AutoDeco checkpoint (config loaded by us)")
-                    logger.info(f"  - base_model_type={config.base_model_type}, base_model_name_or_path={config.base_model_name_or_path}")
         if not is_autodeco_checkpoint:
-            # # Loading from base model - create new AutoDecoConfig
-            # logger.info(f"Creating new AutoDeco model from base model: {pretrained_model_name_or_path}")
-
-            # # Use provided values or defaults
-            # train_temp = train_temp if train_temp is not None else False
-            # train_top_p = train_top_p if train_top_p is not None else False
-            # use_enhanced_features = use_enhanced_features if use_enhanced_features is not None else False
-
-            # config = AutoDecoModelForCausalLMConfig.from_base_model(
-            #     pretrained_model_name_or_path,
-            #     train_temp=train_temp,
-            #     train_top_p=train_top_p,
-            #     use_enhanced_features=use_enhanced_features,
-            #     **kwargs
-            # )
-
-            # # Create model with base model loading
-            # model = cls(config, base_model_kwargs=kwargs)
-            # return model
-            pass
-
-        else:
-            # Loading from AutoDeco checkpoint
-            # Need to determine if it's a full model checkpoint or only heads checkpoint
-            from pathlib import Path
-            checkpoint_path = Path(pretrained_model_name_or_path)
-
-            # Check for full model files
-            full_model_files = [
-                checkpoint_path / "model.safetensors",
-                checkpoint_path / "pytorch_model.bin",
-                checkpoint_path / "model.safetensors.index.json",
-                checkpoint_path / "pytorch_model.bin.index.json",
-            ]
-            is_full_checkpoint = any(f.exists() for f in full_model_files)
-
-            # if is_full_checkpoint:
-            #     # Full model checkpoint - use parent class's from_pretrained
-            #     logger.info(f"Loading full AutoDeco model from checkpoint: {pretrained_model_name_or_path}")
-            #     logger.info("  - Using standard transformers loading mechanism")
-
-            #     # Call parent class's from_pretrained to handle all the loading logic
-            #     model = super(AutoDecoModelForCausalLM, cls).from_pretrained(
-            #         pretrained_model_name_or_path,
-            #         *model_args,
-            #         config=config,
-            #         **kwargs
-            #     )
-            #     print(model)
-            #     assert 1==0
-            #     logger.info(f"✓ Full AutoDeco model loaded successfully")
-            #     return model
-
-            # else:
-            # Only heads checkpoint - load base model separately
-            logger.info(f"Loading AutoDeco model from heads-only checkpoint: {pretrained_model_name_or_path}")
-            logger.info(f"  - base_model_type={config.base_model_type}, base_model_name_or_path={config.base_model_name_or_path}")
-
-            # 1. Load base model from the original path
-            logger.info(f"  - Loading base model from: {config.base_model_name_or_path}")
-            base_model = AutoModelForCausalLM.from_pretrained(
-                config.base_model_name_or_path,
-                **kwargs
+            logger.info(
+                "Creating a new AutoDeco model from base checkpoint: %s",
+                pretrained_model_name_or_path,
             )
+            return cls(config, base_model_args=model_args, base_model_kwargs=kwargs)
 
-            # 2. Create AutoDeco model structure
-            model = cls.__new__(cls)
-            PreTrainedModel.__init__(model, config)
+        checkpoint_path = Path(pretrained_model_name_or_path)
+        logger.info("Loading AutoDeco model from heads-only checkpoint: %s", checkpoint_path)
+        logger.info(
+            "  - base_model_type=%s, base_model_name_or_path=%s",
+            config.base_model_type,
+            config.base_model_name_or_path,
+        )
+        logger.info("  - Loading base model from: %s", config.base_model_name_or_path)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            config.base_model_name_or_path,
+            *model_args,
+            **kwargs,
+        )
 
-            # Set base model
-            model.llm = base_model
-            model.train_temp = config.train_temp
-            model.train_top_p = config.train_top_p
+        # Instantiate lightweight shell first, then attach the loaded base model.
+        model = cls(config, load_base_model=False)
+        model.llm = base_model
+        if hasattr(base_model, "_no_split_modules"):
+            model._no_split_modules = base_model._no_split_modules
 
-            # Initialize heads
-            hidden_size = config.hidden_size
-            model.temp_head = TempHead(hidden_size)
-            model.top_p_head = TopPHead(
-                hidden_size,
-                use_enhanced_features=config.use_enhanced_features
-            )
+        safetensors_path = checkpoint_path / "autodeco_heads.safetensors"
+        pytorch_path = checkpoint_path / "autodeco_heads.bin"
+        loaded = False
 
-            # Check if MoE
-            model.is_moe = hasattr(config, 'num_local_experts') or \
-                            hasattr(config, 'num_experts')
-            if model.is_moe:
-                model.router_aux_loss_coef = getattr(config, 'router_aux_loss_coef', 0.01)
-                model.num_experts = getattr(config, 'num_local_experts', None) or \
-                                    getattr(config, 'num_experts', None)
-                model.num_experts_per_tok = getattr(config, 'num_experts_per_tok', 2)
+        if safetensors_path.exists():
+            logger.info("  - Loading heads from: %s", safetensors_path)
+            try:
+                from safetensors.torch import load_file
 
-            # 3. Load AutoDeco heads weights
-            # Try safetensors first, then pytorch
-            safetensors_path = checkpoint_path / "autodeco_heads.safetensors"
-            pytorch_path = checkpoint_path / "autodeco_heads.bin"
-
-            loaded = False
-
-            if safetensors_path.exists():
-                logger.info(f"  - Loading heads from: {safetensors_path}")
-                try:
-                    from safetensors.torch import load_file
-                    flat_state_dict = load_file(safetensors_path)
-
-                    # Unflatten state dict
-                    temp_head_state = {}
-                    top_p_head_state = {}
-                    for key, value in flat_state_dict.items():
-                        if key.startswith('temp_head.'):
-                            temp_head_state[key.replace('temp_head.', '')] = value
-                        elif key.startswith('top_p_head.'):
-                            top_p_head_state[key.replace('top_p_head.', '')] = value
-
-                    model.temp_head.load_state_dict(temp_head_state)
-                    model.top_p_head.load_state_dict(top_p_head_state)
-                    logger.info(f"  ✓ Loaded heads from safetensors")
-                    loaded = True
-
-                except ImportError:
-                    logger.warning("safetensors not available, trying pytorch format")
-
-            if not loaded and pytorch_path.exists():
-                logger.info(f"  - Loading heads from: {pytorch_path}")
-                autodeco_state_dict = torch.load(pytorch_path, map_location='cpu')
-                model.temp_head.load_state_dict(autodeco_state_dict['temp_head'])
-                model.top_p_head.load_state_dict(autodeco_state_dict['top_p_head'])
-                logger.info(f"  ✓ Loaded heads from pytorch checkpoint")
+                flat_state_dict = load_file(safetensors_path)
+                temp_head_state, top_p_head_state = cls._split_prefixed_heads_state_dict(flat_state_dict)
+                model.temp_head.load_state_dict(temp_head_state)
+                model.top_p_head.load_state_dict(top_p_head_state)
+                logger.info("  ✓ Loaded heads from safetensors")
                 loaded = True
+            except ImportError:
+                logger.warning("safetensors not available, trying pytorch format")
 
-            if not loaded:
-                raise FileNotFoundError(
-                    f"Could not find AutoDeco heads weights at {checkpoint_path}. "
-                    f"Expected either {safetensors_path.name} or {pytorch_path.name}"
-                )
+        if not loaded and pytorch_path.exists():
+            logger.info("  - Loading heads from: %s", pytorch_path)
+            autodeco_state_dict = torch.load(pytorch_path, map_location="cpu")
+            if "temp_head" in autodeco_state_dict and "top_p_head" in autodeco_state_dict:
+                temp_head_state = autodeco_state_dict["temp_head"]
+                top_p_head_state = autodeco_state_dict["top_p_head"]
+            else:
+                temp_head_state, top_p_head_state = cls._split_prefixed_heads_state_dict(autodeco_state_dict)
 
-            logger.info(f"✓ AutoDeco model loaded successfully from heads-only checkpoint")
+            model.temp_head.load_state_dict(temp_head_state)
+            model.top_p_head.load_state_dict(top_p_head_state)
+            logger.info("  ✓ Loaded heads from pytorch checkpoint")
+            loaded = True
 
-            return model
+        if not loaded:
+            raise FileNotFoundError(
+                f"Could not find AutoDeco heads weights at {checkpoint_path}. "
+                f"Expected either {safetensors_path.name} or {pytorch_path.name}"
+            )
+
+        logger.info("✓ AutoDeco model loaded successfully from heads-only checkpoint")
+        return model
 
     def save_pretrained(
         self,
@@ -540,8 +473,6 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
 
         Use merge_autodeco.py script to create full checkpoint for vLLM deployment.
         """
-        import os
-        import json
         from transformers.modeling_utils import unwrap_model
         from huggingface_hub import split_torch_state_dict_into_shards
 
@@ -561,39 +492,28 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         # Prepare state_dict (heads only)
         logger.info("Saving AutoDeco heads only (lightweight)")
 
-        if state_dict is None:
-            # No state_dict provided, get it from model
-            state_dict = {}
-            temp_head_state = model_to_save.temp_head.state_dict()
-            for key, value in temp_head_state.items():
-                state_dict[f"temp_head.{key}"] = value
+        fallback_state_dict = self._flatten_heads_state_dict(
+            model_to_save.temp_head.state_dict(),
+            model_to_save.top_p_head.state_dict(),
+        )
 
-            top_p_head_state = model_to_save.top_p_head.state_dict()
-            for key, value in top_p_head_state.items():
-                state_dict[f"top_p_head.{key}"] = value
+        if state_dict is None:
+            # No state_dict provided, get it from model.
+            state_dict = fallback_state_dict
         else:
             # state_dict provided (e.g., by Trainer), filter to keep only heads
             # The provided state_dict may have full model keys or already-prefixed keys
-            heads_state_dict = {}
-
-            for key, value in state_dict.items():
-                # Keep only temp_head.* and top_p_head.* keys
-                if key.startswith('temp_head.') or key.startswith('top_p_head.'):
-                    heads_state_dict[key] = value
-
-            state_dict = heads_state_dict
+            state_dict = {
+                key: value
+                for key, value in state_dict.items()
+                if key.startswith("temp_head.") or key.startswith("top_p_head.")
+            }
 
             # If no heads found with prefix, the state_dict might not have prefixes
             # In that case, extract from the model itself
             if not state_dict:
                 logger.warning("No heads found in provided state_dict, extracting from model")
-                temp_head_state = model_to_save.temp_head.state_dict()
-                for key, value in temp_head_state.items():
-                    state_dict[f"temp_head.{key}"] = value
-
-                top_p_head_state = model_to_save.top_p_head.state_dict()
-                for key, value in top_p_head_state.items():
-                    state_dict[f"top_p_head.{key}"] = value
+                state_dict = fallback_state_dict
 
         # Use custom name for heads-only checkpoint
         weights_name = "autodeco_heads.safetensors" if safe_serialization else "autodeco_heads.bin"
@@ -724,10 +644,12 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
             log_probs = torch.log(renormalized_probs + 1e-9)
 
             valid_mask = shift_labels != -100
+            if not valid_mask.any():
+                return torch.tensor(0.0, device=unscaled_logits.device)
+
             log_probs = log_probs[valid_mask]
             labels_shift = shift_labels[valid_mask]
             unscaled_valid = unscaled_shift[valid_mask]
-            scaled_valid = scaled_logits[valid_mask]
 
             token_ce = F.nll_loss(
                 log_probs.view(-1, log_probs.size(-1)),
@@ -767,6 +689,9 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
                 lambda_under * error.pow(2),
                 lambda_over * error.pow(2)
             )
+
+            if not masked_valid_mask.any():
+                return torch.tensor(0.0, device=unscaled_logits.device)
 
             return per_token_loss[masked_valid_mask].mean()
 
@@ -866,10 +791,8 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
                 # Mode 2: Training base LLM (when both train_temp and train_top_p are False)
                 # Compute standard language modeling loss
                 logger.debug("Computing standard LM loss (training base model)")
-
-                if labels is not None:
-                    lm_loss = self.llm.loss_function(unscaled_logits, labels, self.llm.vocab_size, **kwargs)
-                    loss = lm_loss
+                lm_loss = self.llm.loss_function(unscaled_logits, labels, self.llm.vocab_size, **kwargs)
+                loss = lm_loss
 
         # # Handle MoE auxiliary loss
         aux_loss = None
@@ -912,13 +835,16 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
 
 
 # Register the config and model
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM as AutoModelForCausalLMClass
-# Register config
-AutoConfig.register("autodeco", AutoDecoModelForCausalLMConfig)
-AutoModel.register(AutoDecoModelForCausalLMConfig, AutoDecoModelForCausalLM)
-AutoModelForCausalLMClass.register(AutoDecoModelForCausalLMConfig, AutoDecoModelForCausalLM)
-print("AutoDeco model registered with transformers (AutoConfig, AutoModel, AutoModelForCausalLM)")
+from transformers import AutoModel, AutoModelForCausalLM as AutoModelForCausalLMClass
 
+try:
+    AutoConfig.register("autodeco", AutoDecoModelForCausalLMConfig)
+    AutoModel.register(AutoDecoModelForCausalLMConfig, AutoDecoModelForCausalLM)
+    AutoModelForCausalLMClass.register(AutoDecoModelForCausalLMConfig, AutoDecoModelForCausalLM)
+
+    print("AutoDecoModelForCausalLM registered for transformers")
+except ValueError as e:
+    print(f"Failed to register AutoDecoModelForCausalLM: {e}")
 
 
 __all__ = [
