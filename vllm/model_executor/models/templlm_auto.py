@@ -842,7 +842,7 @@ try:
     AutoModel.register(AutoDecoModelForCausalLMConfig, AutoDecoModelForCausalLM)
     AutoModelForCausalLMClass.register(AutoDecoModelForCausalLMConfig, AutoDecoModelForCausalLM)
 
-    print("AutoDecoModelForCausalLM registered for transformers")
+    print("AutoDeco model registered with transformers (AutoConfig, AutoModel, AutoModelForCausalLM)")
 except ValueError as e:
     print(f"Failed to register AutoDecoModelForCausalLM: {e}")
 
