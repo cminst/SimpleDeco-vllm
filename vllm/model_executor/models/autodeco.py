@@ -77,12 +77,16 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         
         base_model_type = config.base_model_type
         use_enhanced_features = getattr(config, 'use_enhanced_features', True)
+        self.enable_temperature_head = getattr(config, 'enable_temperature_head', True)
+        self.enable_top_p_head = getattr(config, 'enable_top_p_head', True)
         
         logger.info("="*80)
         logger.info("Initializing AutoDeco model for vLLM:")
         logger.info(f"  - base_model_type: {base_model_type}")
         logger.info(f"  - use_enhanced_features: {use_enhanced_features}")
         logger.info(f"  - hidden_size: {config.hidden_size}")
+        logger.info(f"  - enable_temperature_head: {self.enable_temperature_head}")
+        logger.info(f"  - enable_top_p_head: {self.enable_top_p_head}")
         logger.info("="*80)
         
         # Get base model class
@@ -107,12 +111,19 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         hidden_size = config.hidden_size
         
         # Initialize AutoDeco heads
-        self.temp_head = TempHead(hidden_size)
-        self.top_p_head = TopPHead(
-            hidden_size,
-            vocab_size=config.vocab_size,
-            use_enhanced_features=use_enhanced_features
-        )
+        self.temp_head = TempHead(hidden_size) if self.enable_temperature_head else None
+        self.top_p_head = None
+        if self.enable_top_p_head:
+            self.top_p_head = TopPHead(
+                hidden_size,
+                vocab_size=config.vocab_size,
+                use_enhanced_features=use_enhanced_features
+            )
+            if not self.enable_temperature_head:
+                logger.warning(
+                    "AutoDeco config enables top-p head without temperature head. "
+                    "Using a constant temperature input (1.0) for top-p features."
+                )
         
         # Initialize logits processor
         self.logits_processor = LogitsProcessor(config.vocab_size)

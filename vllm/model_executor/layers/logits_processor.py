@@ -76,12 +76,17 @@ class LogitsProcessor(CustomOp):
         # AutoDeco
         top_p = None
         temp = None
+        temp_for_top_p = None
         if temp_head is not None:
             temp = temp_head(hidden_states)
+            temp_for_top_p = temp
+        elif top_p_head is not None:
+            # Provide a default temp input for top-p-only configurations.
+            temp_for_top_p = torch.ones_like(hidden_states[..., :1])
         if top_p_head is not None:
             # top_p = torch.sigmoid(top_p_head(torch.cat([hidden_states, temp], dim=-1)))
             # top_p = top_p_head(torch.cat([hidden_states, temp], dim=-1))
-            top_p = top_p_head(hidden_states, temp, logits)
+            top_p = top_p_head(hidden_states, temp_for_top_p, logits)
         if logits is not None:
             if self.soft_cap is not None:
                 logits = logits / self.soft_cap
@@ -96,7 +101,9 @@ class LogitsProcessor(CustomOp):
                 sampling_metadata.seq_groups is not None:
                 logits = _apply_logits_processors(logits, sampling_metadata)
 
-        return (logits, temp, top_p) if temp_head is not None else logits
+        if temp_head is not None or top_p_head is not None:
+            return (logits, temp, top_p)
+        return logits
 
     def _gather_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """gather/all-gather the logits tensor across model parallel group."""

@@ -2134,66 +2134,38 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 self.apply_grammar_bitmask(scheduler_output, logits)
 
         with record_function_or_nullcontext("Sample"):
-            # AutoDeco: Apply dynamic sampling parameters with user control
+            # AutoDeco: Apply dynamic sampling parameters
             final_temps_for_output = None
             final_top_ps_for_output = None
+            is_autodeco = (
+                hasattr(self.model_config, "hf_config")
+                and hasattr(self.model_config.hf_config, "model_type")
+                and self.model_config.hf_config.model_type == "autodeco"
+            )
+            enable_temperature_head = (
+                getattr(self.model_config.hf_config, "enable_temperature_head",
+                        True) if is_autodeco else False
+            )
+            enable_top_p_head = (
+                getattr(self.model_config.hf_config, "enable_top_p_head", True)
+                if is_autodeco else False
+            )
             
-            if dynamic_temps is not None and dynamic_top_ps is not None:
-                # Check if this is an AutoDeco model
-                is_autodeco = (hasattr(self.model_config, 'hf_config') and 
-                              hasattr(self.model_config.hf_config, 'model_type') and
-                              self.model_config.hf_config.model_type == 'autodeco')
-                
+            if dynamic_temps is not None or dynamic_top_ps is not None:
                 if is_autodeco:
-                    # Ensure proper shape for sampling metadata
+                    # Ensure proper shape for sampling metadata.
                     # dynamic_temps and dynamic_top_ps have shape [num_reqs, 1]
                     # sampling_metadata expects [num_reqs]
-                    dynamic_temps_squeezed = dynamic_temps.squeeze(-1)
-                    dynamic_top_ps_squeezed = dynamic_top_ps.squeeze(-1)
-                    
-                    num_reqs = dynamic_temps_squeezed.shape[0]
-                    device = dynamic_temps_squeezed.device
-                    
-                    # Get ORIGINAL user-specified parameters from CachedRequestState
-                    # NOT from sampling_metadata (which may have been modified in previous steps)
-                    user_temps_list = []
-                    user_top_ps_list = []
-                    
-                    for req_id in self.input_batch.req_ids:
-                        req_state = self.requests[req_id]
-                        # Get original user parameters (saved at request creation)
-                        orig_temp = req_state.original_temperature
-                        orig_top_p = req_state.original_top_p
-                        
-                        user_temps_list.append(orig_temp if orig_temp is not None else 0.0)
-                        user_top_ps_list.append(orig_top_p if orig_top_p is not None else 1.0)
-                    
-                    user_temps = torch.tensor(user_temps_list, device=device, dtype=dynamic_temps_squeezed.dtype)
-                    user_top_ps = torch.tensor(user_top_ps_list, device=device, dtype=dynamic_top_ps_squeezed.dtype)
-                    
-                    # Apply hybrid logic:
-                    # 1. If user temperature == 0, use greedy sampling (ignore AutoDeco)
-                    # 2. Otherwise, multiply AutoDeco predictions by user values
-                    
-                    final_temps = torch.where(
-                        user_temps == 0.0,
-                        torch.zeros_like(user_temps),  # Greedy: temp=0
-                        dynamic_temps_squeezed * user_temps  # Hybrid: AutoDeco × user
-                    )
-                    
-                    # For top_p: always apply hybrid (AutoDeco × user, clamped)
-                    # Even for greedy, we compute it (though it won't be used)
-                    final_top_ps = torch.clamp(
-                        dynamic_top_ps_squeezed * user_top_ps, 0.0, 1.0
-                    )
-                    
-                    # Override the sampling metadata with hybrid parameters
-                    self.input_batch.sampling_metadata.temperature = final_temps
-                    self.input_batch.sampling_metadata.top_p = final_top_ps
-                    
-                    # Save final values (not raw AutoDeco predictions) for output
-                    final_temps_for_output = final_temps
-                    final_top_ps_for_output = final_top_ps
+                    if enable_temperature_head and dynamic_temps is not None:
+                        dynamic_temps_squeezed = dynamic_temps.squeeze(-1)
+                        self.input_batch.sampling_metadata.temperature = dynamic_temps_squeezed
+                        final_temps_for_output = dynamic_temps_squeezed
+
+                    if enable_top_p_head and dynamic_top_ps is not None:
+                        dynamic_top_ps_squeezed = dynamic_top_ps.squeeze(-1)
+                        final_top_ps = torch.clamp(dynamic_top_ps_squeezed, 0.0, 1.0)
+                        self.input_batch.sampling_metadata.top_p = final_top_ps
+                        final_top_ps_for_output = final_top_ps
             
             sampler_output = self._sample(logits, spec_decode_metadata)
 
@@ -2210,14 +2182,23 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                        logits, hidden_states,
                                        num_scheduled_tokens)
             
-            # AutoDeco: Convert final (hybrid) parameters to CPU for output
+            # AutoDeco: Convert final parameters to CPU for output
             dynamic_temps_cpu = None
             dynamic_top_ps_cpu = None
-            if final_temps_for_output is not None:
-                # Use the final hybrid values (AutoDeco * user), not raw AutoDeco predictions
-                dynamic_temps_cpu = final_temps_for_output.cpu().tolist()
-            if final_top_ps_for_output is not None:
-                dynamic_top_ps_cpu = final_top_ps_for_output.cpu().tolist()
+            if is_autodeco:
+                if enable_temperature_head and final_temps_for_output is not None:
+                    temps_for_output = final_temps_for_output
+                else:
+                    temps_for_output = self.input_batch.sampling_metadata.temperature
+                if enable_top_p_head and final_top_ps_for_output is not None:
+                    top_ps_for_output = final_top_ps_for_output
+                else:
+                    top_ps_for_output = self.input_batch.sampling_metadata.top_p
+
+                if temps_for_output is not None:
+                    dynamic_temps_cpu = temps_for_output.cpu().tolist()
+                if top_ps_for_output is not None:
+                    dynamic_top_ps_cpu = top_ps_for_output.cpu().tolist()
 
         if self.speculative_config:
             assert spec_decode_common_attn_metadata is not None

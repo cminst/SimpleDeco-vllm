@@ -54,17 +54,13 @@ class TopPHead(nn.Module):
 
 
 class TempHead(nn.Module):
-    """Temperature prediction head."""
+    """Temperature prediction head"""
 
     def __init__(self, hidden_size):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, 1024),
-            nn.GELU(),
-            nn.Linear(1024, 512),
-            nn.GELU(),
-            nn.Linear(512, 256),
-            nn.GELU(),
+            nn.Linear(hidden_size, 256),
+            nn.ReLU(),
             nn.Linear(256, 1),
             nn.Sigmoid(),
         )
@@ -72,6 +68,26 @@ class TempHead(nn.Module):
     def forward(self, hidden_states):
         sigmoid_output = self.mlp(hidden_states)
         return sigmoid_output * 2
+
+# class TempHead(nn.Module):
+#     """Temperature prediction head."""
+
+#     def __init__(self, hidden_size):
+#         super().__init__()
+#         self.mlp = nn.Sequential(
+#             nn.Linear(hidden_size, 1024),
+#             nn.GELU(),
+#             nn.Linear(1024, 512),
+#             nn.GELU(),
+#             nn.Linear(512, 256),
+#             nn.GELU(),
+#             nn.Linear(256, 1),
+#             nn.Sigmoid(),
+#         )
+
+#     def forward(self, hidden_states):
+#         sigmoid_output = self.mlp(hidden_states)
+#         return sigmoid_output * 2
 
 
 __all__ = ["TempHead", "TopPHead"]
