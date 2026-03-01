@@ -289,6 +289,30 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             Set of loaded parameter names
         """
         logger.info("Loading AutoDeco weights from merged checkpoint...")
+
+        # Filter out head weights that are disabled in config.
+        # This avoids load failures when checkpoints contain unused heads.
+        filtered_weights: list[tuple[str, torch.Tensor]] = []
+        skipped_temp = 0
+        skipped_top_p = 0
+        for name, tensor in weights:
+            if name.startswith("temp_head.") and not self.enable_temperature_head:
+                skipped_temp += 1
+                continue
+            if name.startswith("top_p_head.") and not self.enable_top_p_head:
+                skipped_top_p += 1
+                continue
+            filtered_weights.append((name, tensor))
+        if skipped_temp > 0:
+            logger.warning(
+                "Skipping %d temp_head.* weights (temperature head disabled).",
+                skipped_temp,
+            )
+        if skipped_top_p > 0:
+            logger.warning(
+                "Skipping %d top_p_head.* weights (top-p head disabled).",
+                skipped_top_p,
+            )
         
         # Use AutoWeightsLoader to handle all weights automatically
         # It will match prefixes: llm.*, temp_head.*, top_p_head.*
@@ -297,7 +321,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
         )
         
-        loaded_params = loader.load_weights(weights)
+        loaded_params = loader.load_weights(filtered_weights)
         
         logger.info(f"✓ Successfully loaded {len(loaded_params)} parameters")
         
