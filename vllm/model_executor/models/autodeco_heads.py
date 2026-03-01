@@ -69,9 +69,9 @@ class TempHead(nn.Module):
         sigmoid_output = self.mlp(hidden_states)
         return sigmoid_output * 2
 
+# This is a slightly larger version that is not used
 # class TempHead(nn.Module):
 #     """Temperature prediction head."""
-
 #     def __init__(self, hidden_size):
 #         super().__init__()
 #         self.mlp = nn.Sequential(
@@ -84,7 +84,6 @@ class TempHead(nn.Module):
 #             nn.Linear(256, 1),
 #             nn.Sigmoid(),
 #         )
-
 #     def forward(self, hidden_states):
 #         sigmoid_output = self.mlp(hidden_states)
 #         return sigmoid_output * 2
