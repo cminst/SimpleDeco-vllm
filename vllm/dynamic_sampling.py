@@ -33,7 +33,7 @@ _POLICY_DEFAULTS: dict[str, dict[str, float]] = {
         "T_max": 1.0,
     },
     "entropy_adaptive": {
-        "H_threshold": 1.5,
+        "H_threshold": 0.15,
         "T_low": 0.3,
         "T_high": 1.0,
     },
@@ -103,8 +103,14 @@ def compute_dynamic_temperature(
         return _sanitize_temperatures(temps)
 
     if config.name == "entropy_adaptive":
+        entropy_max = math.log(logits.shape[-1])
+        entropy_norm = torch.where(
+            entropy_max > 0.0,
+            entropy / entropy_max,
+            torch.zeros_like(entropy),
+        )
         temps = torch.where(
-            entropy < kwargs["H_threshold"],
+            entropy_norm < kwargs["H_threshold"],
             torch.full_like(entropy, kwargs["T_low"]),
             torch.full_like(entropy, kwargs["T_high"]),
         )
@@ -172,6 +178,8 @@ def _parse_dynamic_sampling_config(
             raise ValueError("T_min must be less than or equal to T_max.")
     elif policy == "entropy_adaptive":
         _validate_non_negative(kwargs["H_threshold"], "H_threshold")
+        if kwargs["H_threshold"] > 1.0:
+            raise ValueError("H_threshold must be less than or equal to 1.")
         _validate_non_negative(kwargs["T_low"], "T_low")
         _validate_non_negative(kwargs["T_high"], "T_high")
 

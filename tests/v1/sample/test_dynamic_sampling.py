@@ -86,3 +86,13 @@ def test_sampling_params_rejects_invalid_dynamic_policy_kwargs():
                 "bad_key": 1.0,
             },
         })
+
+
+def test_entropy_adaptive_rejects_threshold_above_one():
+    with pytest.raises(ValueError, match="H_threshold"):
+        SamplingParams(extra_args={
+            "dynamic_sampling_policy": "entropy_adaptive",
+            "dynamic_sampling_kwargs": {
+                "H_threshold": 1.5,
+            },
+        })
