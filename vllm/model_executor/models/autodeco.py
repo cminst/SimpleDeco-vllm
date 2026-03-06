@@ -242,6 +242,20 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             top_p_head=self.top_p_head,
         )
         return result
+
+    def compute_base_logits(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: Optional[SamplingMetadata] = None,
+    ) -> torch.Tensor:
+        """Compute logits without running the AutoDeco heads."""
+        return self.logits_processor(
+            lm_head=self.llm.lm_head,
+            hidden_states=hidden_states,
+            sampling_metadata=sampling_metadata,
+            temp_head=None,
+            top_p_head=None,
+        )
     
     def sample(
         self,

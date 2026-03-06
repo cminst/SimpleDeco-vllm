@@ -32,6 +32,11 @@ from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
 from vllm.distributed.parallel_state import (
     get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
     prepare_communication_buffer_for_model)
+from vllm.dynamic_sampling import (DYNAMIC_SAMPLING_EPS,
+                                   DynamicSamplingConfig,
+                                   GREEDY_TEMPERATURE,
+                                   compute_dynamic_temperature,
+                                   get_dynamic_sampling_config)
 from vllm.forward_context import (BatchDescriptor, DPMetadata,
                                   set_forward_context)
 from vllm.logger import init_logger
@@ -415,6 +420,39 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                             device=self.device,
                             pin_memory=self.pin_memory,
                             with_numpy=numpy)
+
+    def _get_dynamic_sampling_configs(self) -> list[Optional[
+            DynamicSamplingConfig]]:
+        configs: list[Optional[DynamicSamplingConfig]] = []
+        for req_id in self.input_batch.req_ids:
+            req_state = self.requests[req_id]
+            sampling_params = req_state.sampling_params
+            extra_args = None if sampling_params is None else \
+                sampling_params.extra_args
+            configs.append(get_dynamic_sampling_config(extra_args))
+        return configs
+
+    def _get_request_sampling_tensors(
+        self,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        temperatures = torch.empty(
+            self.input_batch.num_reqs,
+            device=device,
+            dtype=torch.float32,
+        )
+        top_ps = torch.empty_like(temperatures)
+
+        for index, req_id in enumerate(self.input_batch.req_ids):
+            sampling_params = self.requests[req_id].sampling_params
+            assert sampling_params is not None
+            if sampling_params.sampling_type == SamplingType.GREEDY:
+                temperatures[index] = GREEDY_TEMPERATURE
+            else:
+                temperatures[index] = sampling_params.temperature
+            top_ps[index] = sampling_params.top_p
+
+        return temperatures, top_ps
 
     def _init_model_kwargs(self, num_tokens: int):
         model_kwargs = dict[str, Any]()
@@ -2075,6 +2113,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             else:
                 hidden_states = model_output
                 aux_hidden_states = None
+            dynamic_sampling_configs = self._get_dynamic_sampling_configs()
+            dynamic_temps, dynamic_top_ps = None, None
+            is_autodeco = (
+                hasattr(self.model_config, "hf_config")
+                and hasattr(self.model_config.hf_config, "model_type")
+                and self.model_config.hf_config.model_type == "autodeco"
+            )
 
             # Broadcast PP output for external_launcher (torchrun)
             # to make sure we are synced across pp ranks
@@ -2099,16 +2144,94 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                       kv_connector_output)
 
                 sample_hidden_states = hidden_states[logits_indices]
+                dynamic_sampling_configs = self._get_dynamic_sampling_configs()
+                dynamic_sampling_indices = [
+                    index for index, config in enumerate(dynamic_sampling_configs)
+                    if config is not None
+                ]
+                is_autodeco = (
+                    hasattr(self.model_config, "hf_config")
+                    and hasattr(self.model_config.hf_config, "model_type")
+                    and self.model_config.hf_config.model_type == "autodeco"
+                )
 
                 # AutoDeco: Compute logits and dynamic sampling parameters
-                dynamic_temps, dynamic_top_ps = None, None
-                compute_results = self.model.compute_logits(sample_hidden_states, None)
-                if isinstance(compute_results, tuple):
-                    # AutoDeco model returns (logits, temperatures, top_ps)
-                    logits, dynamic_temps, dynamic_top_ps = compute_results
+                if is_autodeco and dynamic_sampling_indices:
+                    override_indices = torch.tensor(
+                        dynamic_sampling_indices,
+                        device=sample_hidden_states.device,
+                        dtype=torch.long,
+                    )
+                    default_indices = torch.tensor(
+                        [
+                            index for index, config in enumerate(
+                                dynamic_sampling_configs)
+                            if config is None
+                        ],
+                        device=sample_hidden_states.device,
+                        dtype=torch.long,
+                    )
+                    logits = None
+
+                    if len(dynamic_sampling_indices) > 0:
+                        override_hidden_states = sample_hidden_states.index_select(
+                            0, override_indices)
+                        override_logits = self.model.compute_base_logits(
+                            override_hidden_states, None)
+                        logits = override_logits.new_empty(
+                            (sample_hidden_states.shape[0],
+                             override_logits.shape[-1]))
+                        logits.index_copy_(0, override_indices, override_logits)
+
+                    if len(default_indices) > 0:
+                        default_hidden_states = sample_hidden_states.index_select(
+                            0, default_indices)
+                        default_results = self.model.compute_logits(
+                            default_hidden_states, None)
+                        if isinstance(default_results, tuple):
+                            default_logits, default_temps, default_top_ps = \
+                                default_results
+                            if logits is None:
+                                logits = default_logits.new_empty(
+                                    (sample_hidden_states.shape[0],
+                                     default_logits.shape[-1]))
+                            logits.index_copy_(0, default_indices,
+                                               default_logits)
+                            if default_temps is not None:
+                                dynamic_temps = torch.full(
+                                    (sample_hidden_states.shape[0], 1),
+                                    float("nan"),
+                                    device=default_temps.device,
+                                    dtype=default_temps.dtype,
+                                )
+                                dynamic_temps.index_copy_(0, default_indices,
+                                                          default_temps)
+                            if default_top_ps is not None:
+                                dynamic_top_ps = torch.full(
+                                    (sample_hidden_states.shape[0], 1),
+                                    float("nan"),
+                                    device=default_top_ps.device,
+                                    dtype=default_top_ps.dtype,
+                                )
+                                dynamic_top_ps.index_copy_(
+                                    0, default_indices, default_top_ps)
+                        else:
+                            if logits is None:
+                                logits = default_results.new_empty(
+                                    (sample_hidden_states.shape[0],
+                                     default_results.shape[-1]))
+                            logits.index_copy_(0, default_indices,
+                                               default_results)
+                    assert logits is not None
                 else:
-                    # Standard model returns only logits
-                    logits = compute_results
+                    compute_results = self.model.compute_logits(
+                        sample_hidden_states, None)
+                    if isinstance(compute_results, tuple):
+                        # AutoDeco model returns (logits, temperatures, top_ps)
+                        logits, dynamic_temps, dynamic_top_ps = compute_results
+                    else:
+                        # Standard model returns only logits
+                        logits = compute_results
             if broadcast_pp_output:
                 model_output_broadcast_data = {
                     "logits": logits.contiguous(),
@@ -2135,38 +2258,66 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         with record_function_or_nullcontext("Sample"):
             # AutoDeco: Apply dynamic sampling parameters
+            has_dynamic_sampling_policy = any(config is not None
+                                              for config in
+                                              dynamic_sampling_configs)
             final_temps_for_output = None
             final_top_ps_for_output = None
-            is_autodeco = (
-                hasattr(self.model_config, "hf_config")
-                and hasattr(self.model_config.hf_config, "model_type")
-                and self.model_config.hf_config.model_type == "autodeco"
-            )
-            enable_temperature_head = (
-                getattr(self.model_config.hf_config, "enable_temperature_head",
-                        True) if is_autodeco else False
-            )
-            enable_top_p_head = (
-                getattr(self.model_config.hf_config, "enable_top_p_head", True)
-                if is_autodeco else False
-            )
-            
-            if dynamic_temps is not None or dynamic_top_ps is not None:
-                if is_autodeco:
-                    # Ensure proper shape for sampling metadata.
-                    # dynamic_temps and dynamic_top_ps have shape [num_reqs, 1]
-                    # sampling_metadata expects [num_reqs]
-                    if enable_temperature_head and dynamic_temps is not None:
-                        dynamic_temps_squeezed = dynamic_temps.squeeze(-1)
-                        self.input_batch.sampling_metadata.temperature = dynamic_temps_squeezed
-                        final_temps_for_output = dynamic_temps_squeezed
 
-                    if enable_top_p_head and dynamic_top_ps is not None:
-                        dynamic_top_ps_squeezed = dynamic_top_ps.squeeze(-1)
-                        final_top_ps = torch.clamp(dynamic_top_ps_squeezed, 0.0, 1.0)
-                        self.input_batch.sampling_metadata.top_p = final_top_ps
-                        final_top_ps_for_output = final_top_ps
-            
+            if is_autodeco or has_dynamic_sampling_policy:
+                final_temps_for_output, final_top_ps_for_output = \
+                    self._get_request_sampling_tensors(logits.device)
+
+            if final_temps_for_output is not None and dynamic_temps is not None:
+                dynamic_temps_squeezed = dynamic_temps.squeeze(-1)
+                valid_temp_mask = torch.isfinite(dynamic_temps_squeezed)
+                final_temps_for_output = torch.where(valid_temp_mask,
+                                                     dynamic_temps_squeezed,
+                                                     final_temps_for_output)
+
+            if final_top_ps_for_output is not None and dynamic_top_ps is not None:
+                dynamic_top_ps_squeezed = dynamic_top_ps.squeeze(-1)
+                valid_top_p_mask = torch.isfinite(dynamic_top_ps_squeezed)
+                clamped_top_ps = torch.clamp(dynamic_top_ps_squeezed, 0.0, 1.0)
+                final_top_ps_for_output = torch.where(valid_top_p_mask,
+                                                      clamped_top_ps,
+                                                      final_top_ps_for_output)
+
+            if final_temps_for_output is not None and has_dynamic_sampling_policy:
+                grouped_policy_indices: dict[DynamicSamplingConfig,
+                                             list[int]] = defaultdict(list)
+                for index, config in enumerate(dynamic_sampling_configs):
+                    if config is not None:
+                        grouped_policy_indices[config].append(index)
+
+                for config, indices in grouped_policy_indices.items():
+                    index_tensor = torch.tensor(
+                        indices,
+                        device=logits.device,
+                        dtype=torch.long,
+                    )
+                    policy_temps = compute_dynamic_temperature(
+                        logits.index_select(0, index_tensor), config)
+                    final_temps_for_output.index_copy_(0, index_tensor,
+                                                       policy_temps)
+
+            if final_temps_for_output is not None:
+                all_greedy = bool(
+                    torch.all(final_temps_for_output < DYNAMIC_SAMPLING_EPS))
+                all_random = bool(
+                    torch.all(final_temps_for_output >= DYNAMIC_SAMPLING_EPS))
+                self.input_batch.sampling_metadata.all_greedy = all_greedy
+                self.input_batch.sampling_metadata.all_random = all_random
+                self.input_batch.sampling_metadata.temperature = \
+                    None if all_greedy else final_temps_for_output
+
+            if final_top_ps_for_output is not None:
+                has_top_p = bool(
+                    torch.any(final_top_ps_for_output <
+                              1.0 - DYNAMIC_SAMPLING_EPS))
+                self.input_batch.sampling_metadata.top_p = \
+                    final_top_ps_for_output if has_top_p else None
+
             sampler_output = self._sample(logits, spec_decode_metadata)
 
         with record_function_or_nullcontext("Bookkeep"):
@@ -2185,20 +2336,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # AutoDeco: Convert final parameters to CPU for output
             dynamic_temps_cpu = None
             dynamic_top_ps_cpu = None
-            if is_autodeco:
-                if enable_temperature_head and final_temps_for_output is not None:
-                    temps_for_output = final_temps_for_output
-                else:
-                    temps_for_output = self.input_batch.sampling_metadata.temperature
-                if enable_top_p_head and final_top_ps_for_output is not None:
-                    top_ps_for_output = final_top_ps_for_output
-                else:
-                    top_ps_for_output = self.input_batch.sampling_metadata.top_p
-
-                if temps_for_output is not None:
-                    dynamic_temps_cpu = temps_for_output.cpu().tolist()
-                if top_ps_for_output is not None:
-                    dynamic_top_ps_cpu = top_ps_for_output.cpu().tolist()
+            if is_autodeco or has_dynamic_sampling_policy:
+                if final_temps_for_output is not None:
+                    dynamic_temps_cpu = final_temps_for_output.cpu().tolist()
+                if final_top_ps_for_output is not None:
+                    dynamic_top_ps_cpu = final_top_ps_for_output.cpu().tolist()
 
         if self.speculative_config:
             assert spec_decode_common_attn_metadata is not None
