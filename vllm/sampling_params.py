@@ -10,6 +10,7 @@ from typing import Annotated, Any, Optional, Union
 import msgspec
 from pydantic import BaseModel
 
+from vllm.dynamic_sampling import validate_dynamic_sampling_extra_args
 from vllm.logger import init_logger
 from vllm.logits_process import LogitsProcessor
 from vllm.transformers_utils.tokenizer import AnyTokenizer
@@ -435,6 +436,7 @@ class SamplingParams(
         if self.best_of != self._real_n and self.output_kind == (
                 RequestOutputKind.DELTA):
             raise ValueError("best_of must equal n to use output_kind=DELTA")
+        validate_dynamic_sampling_extra_args(self.extra_args)
 
     def _verify_greedy_sampling(self) -> None:
         if self.n > 1:
