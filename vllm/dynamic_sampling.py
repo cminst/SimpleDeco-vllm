@@ -104,11 +104,10 @@ def compute_dynamic_temperature(
 
     if config.name == "entropy_adaptive":
         entropy_max = math.log(logits.shape[-1])
-        entropy_norm = torch.where(
-            entropy_max > 0.0,
-            entropy / entropy_max,
-            torch.zeros_like(entropy),
-        )
+        if entropy_max > 0.0:
+            entropy_norm = entropy / entropy_max
+        else:
+            entropy_norm = torch.zeros_like(entropy)
         temps = torch.where(
             entropy_norm < kwargs["H_threshold"],
             torch.full_like(entropy, kwargs["T_low"]),
