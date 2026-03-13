@@ -8,6 +8,7 @@ from .interfaces import (HasInnerState, SupportsLoRA, SupportsMultiModal,
 from .interfaces_base import (VllmModelForPooling, VllmModelForTextGeneration,
                               is_pooling_model, is_text_generation_model)
 from .registry import ModelRegistry
+from .ats import ATSModelForCausalLM
 from .autodeco import AutoDecoModelForCausalLM
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "supports_transcription",
     "SupportsV0Only",
     "supports_v0_only",
+    "ATSModelForCausalLM",
 ]

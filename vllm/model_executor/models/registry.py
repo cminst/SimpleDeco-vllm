@@ -41,6 +41,7 @@ logger = init_logger(__name__)
 # yapf: disable
 _TEXT_GENERATION_MODELS = {
     # [Decoder-only]
+    "ATSModelForCausalLM": ("ats", "ATSModelForCausalLM"),
     "AutoDecoModelForCausalLM": ("autodeco", "AutoDecoModelForCausalLM"),
     "ApertusForCausalLM": ("apertus", "ApertusForCausalLM"),
     "AquilaModel": ("llama", "LlamaForCausalLM"),

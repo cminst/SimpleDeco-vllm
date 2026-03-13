@@ -8,6 +8,7 @@ Model configs may be defined in this directory for the following reasons:
 """
 
 from vllm.transformers_utils.configs.chatglm import ChatGLMConfig
+from vllm.transformers_utils.configs.ats import ATSConfig
 from vllm.transformers_utils.configs.deepseek_vl2 import DeepseekVLV2Config
 from vllm.transformers_utils.configs.eagle import EAGLEConfig
 # RWConfig is for the original tiiuae/falcon-40b(-instruct) and
@@ -33,6 +34,7 @@ from vllm.transformers_utils.configs.ultravox import UltravoxConfig
 
 __all__ = [
     "ChatGLMConfig",
+    "ATSConfig",
     "DeepseekVLV2Config",
     "EAGLEConfig",
     "RWConfig",

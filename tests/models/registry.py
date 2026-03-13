@@ -164,6 +164,8 @@ class _HfExamplesInfo:
 # yapf: disable
 _TEXT_GENERATION_EXAMPLE_MODELS = {
     # [Decoder-only]
+    "ATSModelForCausalLM": _HfExamplesInfo("qing/ats-placeholder",
+                                           is_available_online=False),
     "ApertusForCausalLM": _HfExamplesInfo("swiss-ai/Apertus-8B-2509",
                                           min_transformers_version="4.56.0",
                                           trust_remote_code=True),
