@@ -32,6 +32,11 @@ _POLICY_DEFAULTS: dict[str, dict[str, float]] = {
         "T_min": 0.3,
         "T_max": 1.0,
     },
+    "entropy_shift": {
+        "T_base": 0.8,
+        "delta": 0.2,
+        "H_mean": 0.5,
+    },
     "entropy_adaptive": {
         "H_threshold": 0.15,
         "T_low": 0.3,
@@ -94,20 +99,23 @@ def compute_dynamic_temperature(
         torch.zeros_like(log_probs),
     )
     entropy = -(probs * safe_log_probs).sum(dim=-1)
+    entropy_norm = _normalize_entropy(entropy, logits.shape[-1])
 
     if config.name == "entropy_continuous":
-        entropy_max = math.log(logits.shape[-1])
-        entropy_norm = torch.clamp(entropy / entropy_max, 0.0, 1.0)
         temps = kwargs["T_min"] + (kwargs["T_max"] - kwargs["T_min"]
                                     ) * entropy_norm
         return _sanitize_temperatures(temps)
 
+    if config.name == "entropy_shift":
+        temp_min = kwargs["T_base"] - kwargs["delta"] * kwargs["H_mean"]
+        temp_max = kwargs["T_base"] + kwargs["delta"] * (
+            1.0 - kwargs["H_mean"])
+        temps = kwargs["T_base"] + kwargs["delta"] * (
+            entropy_norm - kwargs["H_mean"])
+        temps = torch.clamp(temps, min=temp_min, max=temp_max)
+        return _sanitize_temperatures(temps)
+
     if config.name == "entropy_adaptive":
-        entropy_max = math.log(logits.shape[-1])
-        if entropy_max > 0.0:
-            entropy_norm = entropy / entropy_max
-        else:
-            entropy_norm = torch.zeros_like(entropy)
         temps = torch.where(
             entropy_norm < kwargs["H_threshold"],
             torch.full_like(entropy, kwargs["T_low"]),
@@ -124,6 +132,13 @@ def _sanitize_temperatures(temps: torch.Tensor) -> torch.Tensor:
         torch.full_like(temps, GREEDY_TEMPERATURE),
         temps,
     )
+
+
+def _normalize_entropy(entropy: torch.Tensor, vocab_size: int) -> torch.Tensor:
+    entropy_max = math.log(vocab_size)
+    if entropy_max <= 0.0:
+        return torch.zeros_like(entropy)
+    return torch.clamp(entropy / entropy_max, 0.0, 1.0)
 
 
 def _parse_dynamic_sampling_config(
@@ -175,6 +190,16 @@ def _parse_dynamic_sampling_config(
         _validate_non_negative(kwargs["T_max"], "T_max")
         if kwargs["T_min"] > kwargs["T_max"]:
             raise ValueError("T_min must be less than or equal to T_max.")
+    elif policy == "entropy_shift":
+        _validate_non_negative(kwargs["T_base"], "T_base")
+        _validate_non_negative(kwargs["delta"], "delta")
+        if not 0.0 <= kwargs["H_mean"] <= 1.0:
+            raise ValueError("H_mean must be in [0, 1].")
+        temp_min = kwargs["T_base"] - kwargs["delta"] * kwargs["H_mean"]
+        if temp_min < 0.0:
+            raise ValueError(
+                "entropy_shift requires T_base - delta * H_mean to be "
+                "non-negative.")
     elif policy == "entropy_adaptive":
         _validate_non_negative(kwargs["H_threshold"], "H_threshold")
         if kwargs["H_threshold"] > 1.0:
