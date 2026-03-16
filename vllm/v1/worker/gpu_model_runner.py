@@ -2115,11 +2115,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 aux_hidden_states = None
             dynamic_sampling_configs = self._get_dynamic_sampling_configs()
             dynamic_temps, dynamic_top_ps = None, None
-            is_autodeco = (
-                hasattr(self.model_config, "hf_config")
-                and hasattr(self.model_config.hf_config, "model_type")
-                and self.model_config.hf_config.model_type == "autodeco"
-            )
+            ats_temperature_scales = None
+            model_type = getattr(getattr(self.model_config, "hf_config", None),
+                                 "model_type", None)
+            is_autodeco = model_type == "autodeco"
+            is_ats = model_type == "ats"
 
             # Broadcast PP output for external_launcher (torchrun)
             # to make sure we are synced across pp ranks
@@ -2149,11 +2149,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     index for index, config in enumerate(dynamic_sampling_configs)
                     if config is not None
                 ]
-                is_autodeco = (
-                    hasattr(self.model_config, "hf_config")
-                    and hasattr(self.model_config.hf_config, "model_type")
-                    and self.model_config.hf_config.model_type == "autodeco"
-                )
 
                 # AutoDeco: Compute logits and dynamic sampling parameters
                 if is_autodeco and dynamic_sampling_indices:
@@ -2223,6 +2218,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                             logits.index_copy_(0, default_indices,
                                                default_results)
                     assert logits is not None
+                elif is_ats:
+                    compute_logits_and_scale = getattr(
+                        self.model, "_compute_logits_and_scale", None)
+                    if compute_logits_and_scale is None:
+                        raise AttributeError(
+                            "ATS model is missing _compute_logits_and_scale")
+                    logits, ats_temperature_scales = compute_logits_and_scale(
+                        sample_hidden_states, None)
                 else:
                     compute_results = self.model.compute_logits(
                         sample_hidden_states, None)
@@ -2241,6 +2244,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     model_output_broadcast_data["temps"] = dynamic_temps.contiguous()
                 if dynamic_top_ps is not None:
                     model_output_broadcast_data["top_ps"] = dynamic_top_ps.contiguous()
+                if ats_temperature_scales is not None:
+                    model_output_broadcast_data[
+                        "ats_temperature_scales"] = \
+                        ats_temperature_scales.contiguous()
                     
                 model_output_broadcast_data = get_pp_group(
                 ).broadcast_tensor_dict(model_output_broadcast_data,
@@ -2251,39 +2258,42 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     dynamic_temps = model_output_broadcast_data["temps"]
                 if "top_ps" in model_output_broadcast_data:
                     dynamic_top_ps = model_output_broadcast_data["top_ps"]
+                if "ats_temperature_scales" in model_output_broadcast_data:
+                    ats_temperature_scales = model_output_broadcast_data[
+                        "ats_temperature_scales"]
 
             # Apply structured output bitmasks if present
             if scheduler_output.grammar_bitmask is not None:
                 self.apply_grammar_bitmask(scheduler_output, logits)
 
         with record_function_or_nullcontext("Sample"):
-            # AutoDeco: Apply dynamic sampling parameters
+            # Apply request-time and model-provided sampling parameters.
             has_dynamic_sampling_policy = any(config is not None
                                               for config in
                                               dynamic_sampling_configs)
-            final_temps_for_output = None
-            final_top_ps_for_output = None
+            sampling_temps = None
+            sampling_top_ps = None
 
             if is_autodeco or has_dynamic_sampling_policy:
-                final_temps_for_output, final_top_ps_for_output = \
+                sampling_temps, sampling_top_ps = \
                     self._get_request_sampling_tensors(logits.device)
 
-            if final_temps_for_output is not None and dynamic_temps is not None:
+            if sampling_temps is not None and dynamic_temps is not None:
                 dynamic_temps_squeezed = dynamic_temps.squeeze(-1)
                 valid_temp_mask = torch.isfinite(dynamic_temps_squeezed)
-                final_temps_for_output = torch.where(valid_temp_mask,
-                                                     dynamic_temps_squeezed,
-                                                     final_temps_for_output)
+                sampling_temps = torch.where(valid_temp_mask,
+                                             dynamic_temps_squeezed,
+                                             sampling_temps)
 
-            if final_top_ps_for_output is not None and dynamic_top_ps is not None:
+            if sampling_top_ps is not None and dynamic_top_ps is not None:
                 dynamic_top_ps_squeezed = dynamic_top_ps.squeeze(-1)
                 valid_top_p_mask = torch.isfinite(dynamic_top_ps_squeezed)
                 clamped_top_ps = torch.clamp(dynamic_top_ps_squeezed, 0.0, 1.0)
-                final_top_ps_for_output = torch.where(valid_top_p_mask,
-                                                      clamped_top_ps,
-                                                      final_top_ps_for_output)
+                sampling_top_ps = torch.where(valid_top_p_mask,
+                                              clamped_top_ps,
+                                              sampling_top_ps)
 
-            if final_temps_for_output is not None and has_dynamic_sampling_policy:
+            if sampling_temps is not None and has_dynamic_sampling_policy:
                 grouped_policy_indices: dict[DynamicSamplingConfig,
                                              list[int]] = defaultdict(list)
                 for index, config in enumerate(dynamic_sampling_configs):
@@ -2298,25 +2308,25 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     policy_temps = compute_dynamic_temperature(
                         logits.index_select(0, index_tensor), config)
-                    final_temps_for_output.index_copy_(0, index_tensor,
-                                                       policy_temps)
+                    sampling_temps.index_copy_(0, index_tensor,
+                                               policy_temps)
 
-            if final_temps_for_output is not None:
+            if sampling_temps is not None:
                 all_greedy = bool(
-                    torch.all(final_temps_for_output < DYNAMIC_SAMPLING_EPS))
+                    torch.all(sampling_temps < DYNAMIC_SAMPLING_EPS))
                 all_random = bool(
-                    torch.all(final_temps_for_output >= DYNAMIC_SAMPLING_EPS))
+                    torch.all(sampling_temps >= DYNAMIC_SAMPLING_EPS))
                 self.input_batch.sampling_metadata.all_greedy = all_greedy
                 self.input_batch.sampling_metadata.all_random = all_random
                 self.input_batch.sampling_metadata.temperature = \
-                    None if all_greedy else final_temps_for_output
+                    None if all_greedy else sampling_temps
 
-            if final_top_ps_for_output is not None:
+            if sampling_top_ps is not None:
                 has_top_p = bool(
-                    torch.any(final_top_ps_for_output <
+                    torch.any(sampling_top_ps <
                               1.0 - DYNAMIC_SAMPLING_EPS))
                 self.input_batch.sampling_metadata.top_p = \
-                    final_top_ps_for_output if has_top_p else None
+                    sampling_top_ps if has_top_p else None
 
             sampler_output = self._sample(logits, spec_decode_metadata)
 
@@ -2333,14 +2343,22 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                        logits, hidden_states,
                                        num_scheduled_tokens)
             
-            # AutoDeco: Convert final parameters to CPU for output
+            # Convert reported decoding metadata to CPU for output.
             dynamic_temps_cpu = None
             dynamic_top_ps_cpu = None
-            if is_autodeco or has_dynamic_sampling_policy:
-                if final_temps_for_output is not None:
-                    dynamic_temps_cpu = final_temps_for_output.cpu().tolist()
-                if final_top_ps_for_output is not None:
-                    dynamic_top_ps_cpu = final_top_ps_for_output.cpu().tolist()
+            ats_scales_cpu = None
+            if is_ats and ats_temperature_scales is not None:
+                ats_temperature_scales = ats_temperature_scales.squeeze(-1)
+                safe_ats_scales = torch.clamp_min(ats_temperature_scales,
+                                                  1e-8)
+                dynamic_temps_cpu = torch.reciprocal(
+                    safe_ats_scales).cpu().tolist()
+                ats_scales_cpu = ats_temperature_scales.cpu().tolist()
+            elif is_autodeco or has_dynamic_sampling_policy:
+                if sampling_temps is not None:
+                    dynamic_temps_cpu = sampling_temps.cpu().tolist()
+                if sampling_top_ps is not None:
+                    dynamic_top_ps_cpu = sampling_top_ps.cpu().tolist()
 
         if self.speculative_config:
             assert spec_decode_common_attn_metadata is not None
@@ -2368,9 +2386,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pooler_output=[],
             kv_connector_output=kv_connector_output,
             num_nans_in_logits=num_nans_in_logits,
-            # AutoDeco: Add dynamic sampling parameters to output
+            # Add reported decoding metadata to the output.
             temperatures=dynamic_temps_cpu,
             top_ps=dynamic_top_ps_cpu,
+            ats_temperature_scales=ats_scales_cpu,
         )
 
         if not self.use_async_scheduling:

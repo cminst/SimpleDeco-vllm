@@ -87,9 +87,10 @@ class Request:
         self.num_computed_tokens = 0
         self.cache_salt: Optional[str] = cache_salt
         
-        # AutoDeco: Per-token dynamic sampling parameters
+        # Per-token decoding metadata for generated tokens.
         self._output_temperatures: list[float] = []
         self._output_top_ps: list[float] = []
+        self._output_ats_temperature_scales: list[float] = []
 
         # Multi-modal related
         self.mm_features = mm_features or []
@@ -162,22 +163,31 @@ class Request:
             self.block_hashes.extend(self.get_hash_new_full_blocks())
     
     def append_temps(self, temp: float) -> None:
-        """AutoDeco: Append temperature for a generated token."""
+        """Append the reported temperature for a generated token."""
         self._output_temperatures.append(temp)
     
     def append_top_p(self, top_p: float) -> None:
-        """AutoDeco: Append top_p for a generated token."""
+        """Append the reported top-p for a generated token."""
         self._output_top_ps.append(top_p)
+
+    def append_ats_temperature_scale(self, scale: float) -> None:
+        """Append the raw ATS scale for a generated token."""
+        self._output_ats_temperature_scales.append(scale)
     
     @property
     def output_temperatures(self) -> list[float]:
-        """AutoDeco: Get all output temperatures."""
+        """Get all output temperatures."""
         return self._output_temperatures
     
     @property
     def output_top_ps(self) -> list[float]:
-        """AutoDeco: Get all output top_ps."""
+        """Get all output top-p values."""
         return self._output_top_ps
+
+    @property
+    def output_ats_temperature_scales(self) -> list[float]:
+        """Get all raw ATS temperature scales."""
+        return self._output_ats_temperature_scales
 
     @property
     def is_output_corrupted(self) -> bool:

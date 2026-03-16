@@ -114,11 +114,14 @@ class ModelRunnerOutput:
     # req_id -> num_nans_in_logits
     num_nans_in_logits: Optional[dict[str, int]] = None
     
-    # AutoDeco: Per-request dynamic sampling parameters
-    # [num_reqs] - temperature values used for each request
+    # Per-request dynamic or derived temperatures for each request.
+    # ATS checkpoints report the reciprocal of the raw ATS scale here.
+    # [num_reqs]
     temperatures: Optional[list[float]] = None
     # [num_reqs] - top_p values used for each request
     top_ps: Optional[list[float]] = None
+    # [num_reqs] - raw ATS temperature scales used for each request
+    ats_temperature_scales: Optional[list[float]] = None
 
 
 # ModelRunnerOutput wrapper for async scheduling.

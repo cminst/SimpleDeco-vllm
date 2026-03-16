@@ -38,8 +38,12 @@ class CompletionOutput:
             to stop, None if the completion finished for some other reason
             including encountering the EOS token.
         lora_request: The LoRA request that was used to generate the output.
-        temperatures: Optional list of dynamic temperatures for each token (AutoDeco).
-        top_ps: Optional list of dynamic top-p values for each token (AutoDeco).
+        temperatures: Optional list of dynamic or derived temperatures for
+            each token. ATS checkpoints report `1 / scale` here; this is exact
+            when ATS does not normalize logits and otherwise remains a
+            temperature-like observable.
+        top_ps: Optional list of dynamic top-p values for each token.
+        ats_temperature_scales: Optional list of raw ATS temperature scales for each token.
     """
 
     index: int
@@ -52,6 +56,7 @@ class CompletionOutput:
     lora_request: Optional[LoRARequest] = None
     temperatures: Optional[list[float]] = None
     top_ps: Optional[list[float]] = None
+    ats_temperature_scales: Optional[list[float]] = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -168,6 +173,27 @@ class RequestOutput:
                             next_completion.cumulative_logprob)
                         completion.finish_reason = next_completion.finish_reason
                         completion.stop_reason = next_completion.stop_reason
+                        if next_completion.temperatures is not None:
+                            if completion.temperatures is None:
+                                completion.temperatures = list(
+                                    next_completion.temperatures)
+                            else:
+                                completion.temperatures.extend(
+                                    next_completion.temperatures)
+                        if next_completion.top_ps is not None:
+                            if completion.top_ps is None:
+                                completion.top_ps = list(
+                                    next_completion.top_ps)
+                            else:
+                                completion.top_ps.extend(
+                                    next_completion.top_ps)
+                        if next_completion.ats_temperature_scales is not None:
+                            if completion.ats_temperature_scales is None:
+                                completion.ats_temperature_scales = list(
+                                    next_completion.ats_temperature_scales)
+                            else:
+                                completion.ats_temperature_scales.extend(
+                                    next_completion.ats_temperature_scales)
                     else:
                         # Replace the output with the new one
                         self.outputs[i] = next_completion

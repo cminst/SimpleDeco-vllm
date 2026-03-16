@@ -118,9 +118,10 @@ class EngineCoreOutput(
     # The number of tokens with prefix cache hits.
     num_cached_tokens: int = 0
 
-    # AutoDeco
+    # Dynamic sampling or ATS observability metadata.
     temps: Optional[list[float]] = None
     top_p: Optional[list[float]] = None
+    ats_temperature_scales: Optional[list[float]] = None
     
     @property
     def finished(self) -> bool:

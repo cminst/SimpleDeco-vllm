@@ -119,9 +119,10 @@ class RequestState:
         self.stats = RequestStateStats(
             arrival_time=arrival_time) if log_stats else None
         
-        # AutoDeco: Store per-token dynamic sampling parameters
+        # Store per-token decoding metadata.
         self.output_temperatures: list[float] = []
         self.output_top_ps: list[float] = []
+        self.output_ats_temperature_scales: list[float] = []
 
     @classmethod
     def from_new_request(
@@ -274,21 +275,34 @@ class RequestState:
         if delta and logprobs:
             logprobs = logprobs[-len(token_ids):]
 
-        # AutoDeco: Get temperatures and top_ps for this output
-        # In delta mode, only include the new tokens' parameters
+        # Get decoding metadata for this output.
+        # In delta mode, only include the new tokens' values.
         temps_for_output = None
         top_ps_for_output = None
+        ats_scales_for_output = None
 
         if self.output_temperatures:
             if delta:
-                temps_for_output = self.output_temperatures[-len(token_ids):]
+                temps_for_output = (
+                    self.output_temperatures[-len(token_ids):]
+                    if token_ids else [])
             else:
                 temps_for_output = self.output_temperatures.copy()
         if self.output_top_ps:
             if delta:
-                top_ps_for_output = self.output_top_ps[-len(token_ids):]
+                top_ps_for_output = (
+                    self.output_top_ps[-len(token_ids):]
+                    if token_ids else [])
             else:
                 top_ps_for_output = self.output_top_ps.copy()
+        if self.output_ats_temperature_scales:
+            if delta:
+                ats_scales_for_output = (
+                    self.output_ats_temperature_scales[-len(token_ids):]
+                    if token_ids else [])
+            else:
+                ats_scales_for_output = \
+                    self.output_ats_temperature_scales.copy()
         
         return CompletionOutput(
             index=self.request_index,
@@ -299,7 +313,8 @@ class RequestState:
             finish_reason=str(finish_reason) if finished else None,
             stop_reason=stop_reason if finished else None,
             temperatures=temps_for_output,
-            top_ps=top_ps_for_output)
+            top_ps=top_ps_for_output,
+            ats_temperature_scales=ats_scales_for_output)
 
     def _new_pooling_output(
         self,
@@ -435,11 +450,14 @@ class OutputProcessor:
             req_state.num_cached_tokens = engine_core_output.num_cached_tokens
             req_state.is_prefilling = False
             
-            # AutoDeco: Collect per-token temperatures and top_ps
+            # Collect per-token decoding metadata.
             if engine_core_output.temps is not None:
                 req_state.output_temperatures.extend(engine_core_output.temps)
             if engine_core_output.top_p is not None:
                 req_state.output_top_ps.extend(engine_core_output.top_p)
+            if engine_core_output.ats_temperature_scales is not None:
+                req_state.output_ats_temperature_scales.extend(
+                    engine_core_output.ats_temperature_scales)
 
             if pooling_output is None:
                 assert req_state.detokenizer is not None

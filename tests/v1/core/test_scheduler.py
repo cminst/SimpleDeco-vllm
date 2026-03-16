@@ -732,6 +732,46 @@ def test_schedule_spec_decoding_stats(spec_tokens, output_tokens, expected):
         assert stats.num_accepted_tokens_per_pos == expected[3]
 
 
+def test_schedule_propagates_ats_metadata_for_spec_decode():
+    scheduler = create_scheduler(num_speculative_tokens=2)
+    request = create_requests(num_requests=1, num_tokens=1)[0]
+    scheduler.add_request(request)
+    req_id = request.request_id
+    req_to_index = {req_id: 0}
+
+    output = scheduler.schedule()
+    model_runner_output = ModelRunnerOutput(
+        req_ids=[req_id],
+        req_id_to_index=req_to_index,
+        sampled_token_ids=[[0]],
+        logprobs=None,
+        prompt_logprobs_dict={},
+        pooler_output=[],
+    )
+    scheduler.update_from_output(output, model_runner_output)
+    scheduler.update_draft_token_ids(DraftTokenIds([req_id], [[11, 12]]))
+
+    output = scheduler.schedule()
+    model_runner_output = ModelRunnerOutput(
+        req_ids=[req_id],
+        req_id_to_index=req_to_index,
+        sampled_token_ids=[[21, 22, 23]],
+        logprobs=None,
+        prompt_logprobs_dict={},
+        pooler_output=[],
+        temperatures=[1.25],
+        ats_temperature_scales=[0.8],
+    )
+    engine_core_outputs = scheduler.update_from_output(output,
+                                                       model_runner_output)
+
+    completion_output = engine_core_outputs[0].outputs[0]
+    assert completion_output.new_token_ids == [21, 22, 23]
+    assert completion_output.temps == [1.25, 1.25, 1.25]
+    assert completion_output.ats_temperature_scales == [0.8, 0.8, 0.8]
+    assert completion_output.top_p is None
+
+
 def _assert_right_scheduler_output(
     output: SchedulerOutput,
     num_requests: int,

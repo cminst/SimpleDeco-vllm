@@ -871,9 +871,10 @@ class Scheduler(SchedulerInterface):
         pooler_outputs = model_runner_output.pooler_output
         num_nans_in_logits = model_runner_output.num_nans_in_logits
 
-        # AutoDeco: Get dynamic sampling parameters from model output
+        # Get decoding metadata from model output.
         temperatures = model_runner_output.temperatures
         top_ps = model_runner_output.top_ps
+        ats_temperature_scales = model_runner_output.ats_temperature_scales
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
         spec_decoding_stats: Optional[SpecDecodingStats] = None
 
@@ -895,18 +896,23 @@ class Scheduler(SchedulerInterface):
             generated_token_ids = sampled_token_ids[
                 req_index] if sampled_token_ids else []
     
-            # AutoDeco: Prepare per-token parameters
-            # Note: Each step generates one set of parameters, but may generate
-            # multiple tokens (speculative decoding). All tokens use the same params.
+            # Prepare per-token metadata.
+            # Each step generates one set of metadata values, but may generate
+            # multiple tokens during speculative decoding. All accepted tokens
+            # for the step reuse the same values.
             new_temps_list = None
             new_top_ps_list = None
-            if temperatures is not None and top_ps is not None:
-                # temperatures[req_index] is a single float for this request
+            new_ats_scales_list = None
+            if temperatures is not None:
                 temp_value = temperatures[req_index]
-                top_p_value = top_ps[req_index]
-                # Create a list with same value for each generated token
                 new_temps_list = [temp_value] * len(generated_token_ids)
+            if top_ps is not None:
+                top_p_value = top_ps[req_index]
                 new_top_ps_list = [top_p_value] * len(generated_token_ids)
+            if ats_temperature_scales is not None:
+                ats_scale_value = ats_temperature_scales[req_index]
+                new_ats_scales_list = [ats_scale_value] * len(
+                    generated_token_ids)
             
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id))
@@ -933,14 +939,19 @@ class Scheduler(SchedulerInterface):
 
             # Check for stop and update request status.
             if new_token_ids:
-                # AutoDeco: Update request with tokens and parameters
+                # Update request with tokens and per-token metadata.
                 new_token_ids, stopped = self._update_request_with_output(
-                    request, new_token_ids, new_temps_list, new_top_ps_list)
+                    request, new_token_ids, new_temps_list, new_top_ps_list,
+                    new_ats_scales_list)
                 
-                # Trim parameter lists if stopped early
+                # Trim metadata lists if stopped early.
                 if stopped and new_temps_list is not None:
                     new_temps_list = new_temps_list[:len(new_token_ids)]
+                if stopped and new_top_ps_list is not None:
                     new_top_ps_list = new_top_ps_list[:len(new_token_ids)]
+                if stopped and new_ats_scales_list is not None:
+                    new_ats_scales_list = new_ats_scales_list[
+                        :len(new_token_ids)]
             # Stop checking for pooler models.
             pooler_output = None
             if pooler_outputs:
@@ -996,6 +1007,7 @@ class Scheduler(SchedulerInterface):
                         num_cached_tokens=request.num_cached_tokens,
                         temps=new_temps_list,
                         top_p=new_top_ps_list,
+                        ats_temperature_scales=new_ats_scales_list,
                     ))
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
@@ -1049,6 +1061,7 @@ class Scheduler(SchedulerInterface):
         new_token_ids: list[int],
         temperatures: Optional[list[float]] = None,
         top_ps: Optional[list[float]] = None,
+        ats_temperature_scales: Optional[list[float]] = None,
     ) -> tuple[list[int], bool]:
         # Append generated tokens and check for stop. Note that if
         # a request is still being prefilled, we expect the model runner
@@ -1057,11 +1070,14 @@ class Scheduler(SchedulerInterface):
         for num_new, output_token_id in enumerate(new_token_ids, 1):
             request.append_output_token_ids(output_token_id)
             
-            # AutoDeco: Append temperature and top_p for this token
+            # Append per-token metadata.
             if temperatures is not None:
                 request.append_temps(temperatures[num_new - 1])
             if top_ps is not None:
                 request.append_top_p(top_ps[num_new - 1])
+            if ats_temperature_scales is not None:
+                request.append_ats_temperature_scale(
+                    ats_temperature_scales[num_new - 1])
 
             # Check for stop and update request state.
             # This must be called before we make the EngineCoreOutput.

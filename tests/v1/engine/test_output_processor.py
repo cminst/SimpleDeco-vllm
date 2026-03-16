@@ -16,7 +16,7 @@ from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.sequence import PromptLogprobs, SampleLogprobs
 from vllm.transformers_utils.tokenizer import AnyTokenizer
-from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
 from vllm.v1.engine.output_processor import (OutputProcessor,
                                              RequestOutputCollector)
 from vllm.v1.metrics.stats import IterationStats
@@ -834,6 +834,63 @@ def test_iteration_stats(dummy_test_vectors):
     assert iteration_stats.num_generation_tokens == num_active
 
 
+def test_output_processor_propagates_ats_metadata(dummy_test_vectors):
+    output_processor = OutputProcessor(dummy_test_vectors.tokenizer_group,
+                                       log_stats=False)
+    prompt_tokens = dummy_test_vectors.prompt_tokens[0]
+    generation_tokens = dummy_test_vectors.generation_tokens[0]
+    request = EngineCoreRequest(
+        request_id="request-ats",
+        prompt_token_ids=prompt_tokens,
+        mm_features=None,
+        eos_token_id=None,
+        arrival_time=0,
+        lora_request=None,
+        cache_salt=None,
+        data_parallel_rank=None,
+        sampling_params=SamplingParams(
+            skip_special_tokens=False,
+            spaces_between_special_tokens=False,
+            output_kind=RequestOutputKind.DELTA,
+            stop=[],
+            include_stop_str_in_output=False,
+        ),
+        pooling_params=None,
+    )
+    output_processor.add_request(request, dummy_test_vectors.prompt_strings[0])
+
+    first_output = EngineCoreOutput(
+        request_id=request.request_id,
+        new_token_ids=[generation_tokens[0]],
+        temps=[1.25],
+        ats_temperature_scales=[0.8],
+    )
+    second_output = EngineCoreOutput(
+        request_id=request.request_id,
+        new_token_ids=generation_tokens[1:3],
+        finish_reason=FinishReason.LENGTH,
+        temps=[1.5, 1.75],
+        ats_temperature_scales=[2 / 3, 4 / 7],
+    )
+
+    first_request_output = output_processor.process_outputs(
+        [first_output]).request_outputs[0]
+    first_completion = first_request_output.outputs[0]
+    assert first_completion.token_ids == [generation_tokens[0]]
+    assert first_completion.temperatures == [1.25]
+    assert first_completion.ats_temperature_scales == [0.8]
+    assert first_completion.top_ps is None
+
+    second_request_output = output_processor.process_outputs(
+        [second_output]).request_outputs[0]
+    second_completion = second_request_output.outputs[0]
+    assert second_completion.token_ids == generation_tokens[1:3]
+    assert second_completion.temperatures == [1.5, 1.75]
+    assert second_completion.ats_temperature_scales == [2 / 3, 4 / 7]
+    assert second_completion.top_ps is None
+    assert second_completion.finish_reason == str(FinishReason.LENGTH)
+
+
 @pytest.mark.asyncio
 async def test_request_output_collector():
     NUM_REQS = 3
@@ -856,6 +913,9 @@ async def test_request_output_collector():
                             "a": idx,
                             "b": idx
                         }],
+                        temperatures=[0.5 + idx],
+                        top_ps=[0.9 - idx * 0.1],
+                        ats_temperature_scales=[2.0 + idx],
                         finish_reason="length" if
                         (idx == NUM_REQS - 1) else None,
                     )
@@ -891,6 +951,9 @@ async def test_request_output_collector():
                             list(range(num_to_put))):
         assert tok_0 == tok_1
     assert len(output.outputs[0].logprobs) == num_to_put
+    assert output.outputs[0].temperatures == [0.5, 1.5]
+    assert output.outputs[0].top_ps == [0.9, 0.8]
+    assert output.outputs[0].ats_temperature_scales == [2.0, 3.0]
 
     # Cumulative logprobs should be the last one.
     cumulative_logprob_expected = 1.0 * num_to_put
@@ -913,6 +976,9 @@ async def test_request_output_collector():
                             list(range(num_to_put))):
         assert tok_0 == tok_1
     assert len(output.outputs[0].logprobs) == num_to_put
+    assert output.outputs[0].temperatures == [0.5, 1.5, 2.5]
+    assert output.outputs[0].top_ps == [0.9, 0.8, 0.7]
+    assert output.outputs[0].ats_temperature_scales == [2.0, 3.0, 4.0]
 
     # Cumulative logprobs should be the last one.
     cumulative_logprob_expected = 1.0 * num_to_put

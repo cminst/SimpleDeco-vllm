@@ -130,6 +130,17 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         hidden_states: torch.Tensor,
         sampling_metadata: Optional[SamplingMetadata],
     ) -> torch.Tensor:
+        logits, _ = self._compute_simple_head_logits_with_scale(
+            hidden_states,
+            sampling_metadata,
+        )
+        return logits
+
+    def _compute_simple_head_logits_with_scale(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: Optional[SamplingMetadata],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         base_logits = self._compute_base_logits(hidden_states, sampling_metadata)
         batch = hidden_states.shape[0]
         seq_hidden_states = hidden_states.unsqueeze(1)
@@ -143,7 +154,7 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             attention_mask=attention_mask,
             position_ids=position_ids,
         ).squeeze(1)
-        return self.ats_head.apply_scale(base_logits, temperature_scale)
+        return self.ats_head.apply_scale(base_logits, temperature_scale), temperature_scale
 
     def _request_key(self, request_idx: int) -> int:
         if self._runtime_metadata is None:
@@ -156,8 +167,22 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         sample_hidden_states: torch.Tensor,
         sampling_metadata: Optional[SamplingMetadata],
     ) -> torch.Tensor:
+        logits, _ = self._compute_transformer_logits_with_scale(
+            sample_hidden_states,
+            sampling_metadata,
+        )
+        return logits
+
+    def _compute_transformer_logits_with_scale(
+        self,
+        sample_hidden_states: torch.Tensor,
+        sampling_metadata: Optional[SamplingMetadata],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self._runtime_hidden_states is None or self._runtime_metadata is None:
-            return self._compute_simple_head_logits(sample_hidden_states, sampling_metadata)
+            return self._compute_simple_head_logits_with_scale(
+                sample_hidden_states,
+                sampling_metadata,
+            )
         base_logits = self._compute_base_logits(sample_hidden_states, sampling_metadata)
         query_start_loc = self._runtime_metadata["query_start_loc"]
         num_computed = self._runtime_metadata["num_computed_tokens_cpu"]
@@ -191,7 +216,22 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             request_scales.append(temperature_scale)
             self._request_hidden_cache[request_key] = full_hidden.detach()
         stacked_scale = torch.cat(request_scales, dim=0).squeeze(1)
-        return self.ats_head.apply_scale(base_logits, stacked_scale)
+        return self.ats_head.apply_scale(base_logits, stacked_scale), stacked_scale
+
+    def _compute_logits_and_scale(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: Optional[SamplingMetadata],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.config.calibration_type == "transformer":
+            return self._compute_transformer_logits_with_scale(
+                hidden_states,
+                sampling_metadata,
+            )
+        return self._compute_simple_head_logits_with_scale(
+            hidden_states,
+            sampling_metadata,
+        )
 
     def compute_logits(
         self,
