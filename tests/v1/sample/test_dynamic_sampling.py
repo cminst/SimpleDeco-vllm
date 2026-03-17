@@ -7,7 +7,8 @@ import pytest
 import torch
 
 from vllm import SamplingParams
-from vllm.dynamic_sampling import (GREEDY_TEMPERATURE,
+from vllm.dynamic_sampling import (DYNAMIC_SAMPLING_EPS,
+                                   GREEDY_TEMPERATURE,
                                    compute_dynamic_temperature,
                                    get_dynamic_sampling_config)
 
@@ -51,6 +52,40 @@ def test_entropy_continuous_respects_bounds_and_entropy_ordering():
     assert torch.all(temps >= 0.2)
     assert torch.all(temps <= 0.9)
     assert temps[0].item() < temps[1].item()
+
+
+def test_edt_uses_raw_entropy_formula():
+    logits = torch.tensor([
+        [8.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0],
+    ])
+    config = get_dynamic_sampling_config({
+        "dynamic_sampling_policy": "edt",
+        "dynamic_sampling_kwargs": {
+            "T0": 0.7,
+            "theta": 0.5,
+            "N": 0.8,
+        },
+    })
+    assert config is not None
+
+    temps = compute_dynamic_temperature(logits, config)
+
+    log_probs = torch.log_softmax(logits, dim=-1)
+    probs = log_probs.exp()
+    entropy = -(probs * log_probs).sum(dim=-1)
+    safe_entropy = torch.clamp_min(entropy, DYNAMIC_SAMPLING_EPS)
+    expected = 0.7 * torch.exp(math.log(0.8) * (0.5 / safe_entropy))
+    expected = torch.clamp(expected, min=0.0, max=0.7)
+    expected = torch.where(
+        expected < DYNAMIC_SAMPLING_EPS,
+        torch.full_like(expected, GREEDY_TEMPERATURE),
+        expected,
+    )
+
+    assert temps.tolist() == pytest.approx(expected.tolist())
+    assert temps[0].item() < temps[1].item() < temps[2].item()
 
 
 def test_entropy_shift_tracks_entropy_around_anchor_temperature():
@@ -136,5 +171,25 @@ def test_entropy_shift_rejects_negative_derived_min_temperature():
                 "T_base": 0.1,
                 "delta": 0.3,
                 "H_mean": 0.5,
+            },
+        })
+
+
+def test_edt_rejects_base_outside_open_unit_interval():
+    with pytest.raises(ValueError, match="N must be in \\(0, 1\\)"):
+        SamplingParams(extra_args={
+            "dynamic_sampling_policy": "edt",
+            "dynamic_sampling_kwargs": {
+                "N": 1.0,
+            },
+        })
+
+
+def test_edt_rejects_negative_theta():
+    with pytest.raises(ValueError, match="theta"):
+        SamplingParams(extra_args={
+            "dynamic_sampling_policy": "edt",
+            "dynamic_sampling_kwargs": {
+                "theta": -0.1,
             },
         })

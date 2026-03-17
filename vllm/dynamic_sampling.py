@@ -28,6 +28,11 @@ _POLICY_DEFAULTS: dict[str, dict[str, float]] = {
         "T_high": 1.0,
         "maxprob_threshold": 0.9,
     },
+    "edt": {
+        "T0": 0.6,
+        "theta": 0.1,
+        "N": 0.8,
+    },
     "entropy_continuous": {
         "T_min": 0.3,
         "T_max": 1.0,
@@ -99,6 +104,14 @@ def compute_dynamic_temperature(
         torch.zeros_like(log_probs),
     )
     entropy = -(probs * safe_log_probs).sum(dim=-1)
+
+    if config.name == "edt":
+        safe_entropy = torch.clamp_min(entropy, DYNAMIC_SAMPLING_EPS)
+        temps = kwargs["T0"] * torch.exp(
+            math.log(kwargs["N"]) * (kwargs["theta"] / safe_entropy))
+        temps = torch.clamp(temps, min=0.0, max=kwargs["T0"])
+        return _sanitize_temperatures(temps)
+
     entropy_norm = _normalize_entropy(entropy, logits.shape[-1])
 
     if config.name == "entropy_continuous":
@@ -185,6 +198,11 @@ def _parse_dynamic_sampling_config(
         _validate_non_negative(kwargs["T_high"], "T_high")
         if not 0.0 <= kwargs["maxprob_threshold"] <= 1.0:
             raise ValueError("maxprob_threshold must be in [0, 1].")
+    elif policy == "edt":
+        _validate_non_negative(kwargs["T0"], "T0")
+        _validate_non_negative(kwargs["theta"], "theta")
+        if not 0.0 < kwargs["N"] < 1.0:
+            raise ValueError("N must be in (0, 1).")
     elif policy == "entropy_continuous":
         _validate_non_negative(kwargs["T_min"], "T_min")
         _validate_non_negative(kwargs["T_max"], "T_max")
