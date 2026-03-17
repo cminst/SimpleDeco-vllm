@@ -264,3 +264,47 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
 
 
 __all__ = ["ATSModelForCausalLM"]
+
+
+def _register_ats_with_transformers() -> None:
+    try:
+        from transformers import AutoConfig, AutoModel
+        from transformers import (
+            AutoModelForCausalLM as AutoModelForCausalLMClass,
+        )
+
+        from model.ats_auto import (
+            ATSConfig as HFATSConfig,
+            ATSModelForCausalLM as HFATSModelForCausalLM,
+        )
+    except Exception as e:
+        print(f"Failed to register ATSModelForCausalLM: {e}")
+        return
+
+    registration_errors: list[str] = []
+    registrations = (
+        (AutoConfig.register, ("ats", HFATSConfig)),
+        (AutoModel.register, (HFATSConfig, HFATSModelForCausalLM)),
+        (AutoModelForCausalLMClass.register,
+         (HFATSConfig, HFATSModelForCausalLM)),
+    )
+    for register_fn, args in registrations:
+        try:
+            register_fn(*args)
+        except ValueError:
+            # Already registered in this process.
+            pass
+        except Exception as e:
+            registration_errors.append(str(e))
+
+    if registration_errors:
+        print(
+            "Failed to register ATSModelForCausalLM: "
+            + "; ".join(registration_errors))
+    else:
+        print(
+            "ATS model registered with transformers "
+            "(AutoConfig, AutoModel, AutoModelForCausalLM)")
+
+
+_register_ats_with_transformers()
