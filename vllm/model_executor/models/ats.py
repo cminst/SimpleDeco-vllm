@@ -12,7 +12,6 @@ from vllm.distributed import get_pp_group
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.sampler import get_sampler
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
@@ -43,7 +42,6 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         )
         self.ats_head: BaseATSHead = build_ats_head(config)
         self.logits_processor = LogitsProcessor(config.vocab_size)
-        self.sampler = get_sampler()
         self._runtime_hidden_states: torch.Tensor | None = None
         self._runtime_metadata: dict[str, torch.Tensor] | None = None
         self._request_hidden_cache: dict[int, torch.Tensor] = {}
@@ -241,13 +239,6 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         if self.config.calibration_type == "transformer":
             return self._compute_transformer_logits(hidden_states, sampling_metadata)
         return self._compute_simple_head_logits(hidden_states, sampling_metadata)
-
-    def sample(
-        self,
-        logits: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ):
-        return self.sampler(logits, sampling_metadata)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
         loader = AutoWeightsLoader(

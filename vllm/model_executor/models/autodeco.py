@@ -24,16 +24,14 @@ Usage:
     llm = LLM(model="./full-checkpoint", trust_remote_code=True)
 """
 
-from typing import Iterable, List, Set, Tuple, Union
+from typing import Iterable, Set, Tuple, Union
 
 import torch
 from torch import nn
 
 from vllm.config import VllmConfig
-from vllm.distributed import get_pp_group
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.sampler import get_sampler
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
@@ -127,10 +125,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         
         # Initialize logits processor
         self.logits_processor = LogitsProcessor(config.vocab_size)
-        
-        # Initialize sampler
-        self.sampler = get_sampler()
-        
+
         # Copy useful attributes from base model
         if hasattr(self.llm, 'make_empty_intermediate_tensors'):
             self.make_empty_intermediate_tensors = (
@@ -256,36 +251,6 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             temp_head=None,
             top_p_head=None,
         )
-    
-    def sample(
-        self,
-        logits: Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-        sampling_metadata: SamplingMetadata,
-    ) -> torch.Tensor | None:
-        """
-        Sample next tokens from logits with dynamic temperature and top-p.
-        
-        Args:
-            logits: Either just logits tensor, or tuple of (logits, temperatures, top_ps)
-            sampling_metadata: Sampling parameters
-        
-        Returns:
-            Sampler output with next tokens
-        """
-        # Check if we got dynamic temperature and top_p from AutoDeco heads
-        if isinstance(logits, tuple):
-            logits_tensor, temperatures, top_ps = logits
-            # Pass dynamic temperature and top_p to sampler
-            next_tokens = self.sampler(
-                logits=logits_tensor,
-                sampling_metadata=sampling_metadata,
-                dynamic_temperatures=temperatures,
-                dynamic_top_ps=top_ps,
-            )
-        else:
-            # Standard sampling without dynamic parameters
-            next_tokens = self.sampler(logits, sampling_metadata)
-        return next_tokens
     
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
         """
