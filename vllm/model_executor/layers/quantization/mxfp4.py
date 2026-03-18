@@ -93,11 +93,11 @@ def get_mxfp4_backend():
             logger.info_once("Using Marlin backend")
             return Mxfp4Backend.MARLIN
         else:
-            logger.info_once("Using Triton backend")
-            return Mxfp4Backend.TRITON
+            logger.info_once("[mxfp4.py] Using Marlin backend (forced for RTX Pro 6000 Blackwell)")
+            return Mxfp4Backend.MARLIN
     elif current_platform.is_rocm() and has_triton_kernels():
-        logger.info_once("Using Triton backend")
-        return Mxfp4Backend.TRITON
+        logger.info_once("[mxfp4.py] Using Marlin backend (forced for RTX Pro 6000 Blackwell)")
+        return Mxfp4Backend.MARLIN
 
     return Mxfp4Backend.NONE
 
@@ -568,7 +568,8 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 layer.w2_weight_scale = torch.nn.Parameter(
                     w2_scales_interleaved, requires_grad=False)
         elif self.mxfp4_backend == Mxfp4Backend.TRITON:
-            from triton_kernels.matmul_ogs import FlexCtx, PrecisionConfig
+            # BLACKWELL FIX — force Marlin (Triton kernels incompatible on SM120 in this fork)
+            FlexCtx = PrecisionConfig = None   # dummies so nothing breaks
 
             w13_bias = layer.w13_bias.to(torch.float32)
             w2_bias = layer.w2_bias.to(torch.float32)
