@@ -376,6 +376,7 @@ class ExecuteModelState(NamedTuple):
     ats_temperature_scales: torch.Tensor | None
     spec_decode_metadata: SpecDecodeMetadata | None
     spec_decode_common_attn_metadata: CommonAttentionMetadata | None
+    dynamic_sampling_configs: list[DynamicSamplingConfig | None]
     hidden_states: torch.Tensor
     sample_hidden_states: torch.Tensor
     aux_hidden_states: list[torch.Tensor] | None
@@ -4043,6 +4044,7 @@ class GPUModelRunner(
             ats_temperature_scales,
             spec_decode_metadata,
             spec_decode_common_attn_metadata,
+            dynamic_sampling_configs,
             hidden_states,
             sample_hidden_states,
             aux_hidden_states,
@@ -4084,6 +4086,7 @@ class GPUModelRunner(
             ats_temperature_scales,
             spec_decode_metadata,
             spec_decode_common_attn_metadata,
+            dynamic_sampling_configs,
             hidden_states,
             sample_hidden_states,
             aux_hidden_states,
