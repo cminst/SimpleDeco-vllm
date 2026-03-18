@@ -5576,8 +5576,24 @@ class GPUModelRunner(
 
         hidden_states = torch.rand_like(hidden_states)
 
-        # AutoDeco
-        outputs = self.model.compute_logits(hidden_states, None)
+        model_type = getattr(getattr(self.model_config, "hf_config", None),
+                             "model_type", None)
+        is_autodeco = model_type == "autodeco"
+        is_ats = model_type == "ats"
+
+        if is_ats:
+            compute_logits_and_scale = getattr(
+                self.model, "_compute_logits_and_scale", None)
+            if compute_logits_and_scale is None:
+                raise AttributeError(
+                    "ATS model is missing _compute_logits_and_scale")
+            outputs, _ = compute_logits_and_scale(hidden_states, None)
+        else:
+            outputs = (
+                self.model.compute_logits(hidden_states, None)
+                if is_autodeco else
+                self.model.compute_logits(hidden_states)
+            )
         if isinstance(outputs, tuple):
             logits, temps, top_p = outputs
         else:
