@@ -35,7 +35,12 @@ class AsyncScheduler(Scheduler):
             request.spec_token_ids = self._spec_token_placeholders
 
     def _update_request_with_output(
-        self, request: Request, new_token_ids: list[int]
+        self,
+        request: Request,
+        new_token_ids: list[int],
+        temperatures: list[float] | None = None,
+        top_ps: list[float] | None = None,
+        ats_temperature_scales: list[float] | None = None,
     ) -> tuple[list[int], bool]:
         if request.discard_latest_async_tokens:
             # If the request is force preempted in reset_prefix_cache, we
@@ -45,7 +50,11 @@ class AsyncScheduler(Scheduler):
 
         status_before_update = request.status
         new_token_ids, stopped = super()._update_request_with_output(
-            request, new_token_ids
+            request,
+            new_token_ids,
+            temperatures,
+            top_ps,
+            ats_temperature_scales,
         )
 
         # Update the number of output placeholders.
