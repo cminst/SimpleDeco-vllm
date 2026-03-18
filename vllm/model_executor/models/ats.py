@@ -264,16 +264,32 @@ __all__ = ["ATSModelForCausalLM"]
 
 def _register_ats_with_transformers() -> None:
     try:
+        import importlib
+
         from transformers import AutoConfig, AutoModel
         from transformers import (
             AutoModelForCausalLM as AutoModelForCausalLMClass,
         )
+    except Exception:
+        return
 
-        from model.ats_auto import (
-            ATSConfig as HFATSConfig,
-            ATSModelForCausalLM as HFATSModelForCausalLM,
-        )
-    except Exception as e:
+    hf_ats_module = None
+    for module_name in ("model.ats_auto",):
+        try:
+            hf_ats_module = importlib.import_module(module_name)
+            break
+        except ModuleNotFoundError:
+            continue
+
+    # ATS HF registration is optional in this fork. Skip quietly when the
+    # companion Transformers implementation is not available.
+    if hf_ats_module is None:
+        return
+
+    try:
+        HFATSConfig = hf_ats_module.ATSConfig
+        HFATSModelForCausalLM = hf_ats_module.ATSModelForCausalLM
+    except AttributeError as e:
         print(f"Failed to register ATSModelForCausalLM: {e}")
         return
 
