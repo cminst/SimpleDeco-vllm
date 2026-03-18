@@ -93,11 +93,11 @@ def get_mxfp4_backend():
             logger.info_once("Using Marlin backend")
             return Mxfp4Backend.MARLIN
         else:
-            logger.info_once("[mxfp4.py] Using Marlin backend (forced for RTX Pro 6000 Blackwell)")
-            return Mxfp4Backend.MARLIN
+            logger.info_once("Using Triton backend")
+            return Mxfp4Backend.TRITON
     elif current_platform.is_rocm() and has_triton_kernels():
-        logger.info_once("[mxfp4.py] Using Marlin backend (forced for RTX Pro 6000 Blackwell)")
-        return Mxfp4Backend.MARLIN
+        logger.info_once("Using Triton backend")
+        return Mxfp4Backend.TRITON
 
     return Mxfp4Backend.NONE
 
@@ -568,8 +568,16 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 layer.w2_weight_scale = torch.nn.Parameter(
                     w2_scales_interleaved, requires_grad=False)
         elif self.mxfp4_backend == Mxfp4Backend.TRITON:
-            # BLACKWELL FIX — force Marlin (Triton kernels incompatible on SM120 in this fork)
-            FlexCtx = PrecisionConfig = None   # dummies so nothing breaks
+            try:
+                from triton_kernels.matmul_ogs import FlexCtx, PrecisionConfig
+            except Exception as import_error:
+                logger.warning_once(
+                    "Failed to import triton_kernels.matmul_ogs; "
+                    "setting FlexCtx and PrecisionConfig to None. "
+                    "Error: %s",
+                    import_error,
+                )
+                FlexCtx = PrecisionConfig = None
 
             w13_bias = layer.w13_bias.to(torch.float32)
             w2_bias = layer.w2_bias.to(torch.float32)
@@ -589,10 +597,14 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
             w2_weight, w2_flex, w2_scale = _swizzle_mxfp4(
                 layer.w2_weight, layer.w2_weight_scale, num_warps)
 
-            self.w13_precision_config = PrecisionConfig(
-                weight_scale=w13_scale, flex_ctx=FlexCtx(rhs_data=w13_flex))
-            self.w2_precision_config = PrecisionConfig(
-                weight_scale=w2_scale, flex_ctx=FlexCtx(rhs_data=w2_flex))
+            if FlexCtx is None or PrecisionConfig is None:
+                self.w13_precision_config = None
+                self.w2_precision_config = None
+            else:
+                self.w13_precision_config = PrecisionConfig(
+                    weight_scale=w13_scale, flex_ctx=FlexCtx(rhs_data=w13_flex))
+                self.w2_precision_config = PrecisionConfig(
+                    weight_scale=w2_scale, flex_ctx=FlexCtx(rhs_data=w2_flex))
 
             self.w13_weight_triton_tensor = w13_weight
             self.w2_weight_triton_tensor = w2_weight
