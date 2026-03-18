@@ -17,9 +17,12 @@ from vllm.sequence import IntermediateTensors
 
 from .ats_head import BaseATSHead, build_ats_head
 from .interfaces import SupportsLoRA, SupportsPP
-from .utils import AutoWeightsLoader, maybe_prefix
 
 logger = init_logger(__name__)
+
+
+def maybe_prefix(prefix: str, name: str) -> str:
+    return name if not prefix else f"{prefix}.{name}"
 
 
 class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
@@ -241,6 +244,8 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         return self._compute_simple_head_logits(hidden_states, sampling_metadata)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
+        from .utils import AutoWeightsLoader
+
         loader = AutoWeightsLoader(
             self,
             skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),

@@ -37,9 +37,12 @@ from vllm.sequence import IntermediateTensors
 
 from .autodeco_heads import TempHead, TopPHead
 from .interfaces import SupportsLoRA, SupportsPP
-from .utils import AutoWeightsLoader, maybe_prefix
 
 logger = init_logger(__name__)
+
+
+def maybe_prefix(prefix: str, name: str) -> str:
+    return name if not prefix else f"{prefix}.{name}"
 
 
 class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
@@ -268,6 +271,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             Set of loaded parameter names
         """
         logger.info("Loading AutoDeco weights from merged checkpoint...")
+        from .utils import AutoWeightsLoader
 
         # Filter out head weights that are disabled in config.
         # This avoids load failures when checkpoints contain unused heads.
