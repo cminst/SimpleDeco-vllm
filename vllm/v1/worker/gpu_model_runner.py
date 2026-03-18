@@ -4103,6 +4103,11 @@ class GPUModelRunner(
                 scheduler_output, grammar_output, self.input_batch, logits
             )
 
+        model_type = getattr(getattr(self.model_config, "hf_config", None),
+                             "model_type", None)
+        is_autodeco = model_type == "autodeco"
+        is_ats = model_type == "ats"
+
         with record_function_or_nullcontext("gpu_model_runner: sample"):
             has_dynamic_sampling_policy = any(config is not None
                                               for config in
