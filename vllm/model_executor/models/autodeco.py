@@ -17,7 +17,7 @@ Usage:
     python merge_autodeco.py --mode lightweight_to_full \\
         --autodeco-checkpoint ./lightweight-checkpoint \\
         --output ./full-checkpoint
-    
+
     # 2. Then load with vLLM:
     for example:
     from vllm import LLM
@@ -32,7 +32,7 @@ from torch import nn
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
 from .autodeco_heads import TempHead, TopPHead
@@ -45,39 +45,39 @@ logger = init_logger(__name__)
 class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     """
     Unified AutoDeco model for vLLM inference.
-    
+
     This loads a complete checkpoint containing:
     - Base LLM model (self.llm)
     - Temperature prediction head (self.temp_head)
     - Top-p prediction head (self.top_p_head)
-    
+
     The checkpoint must be created by merging heads with base model using:
         python merge_autodeco.py --mode lightweight_to_full ...
     """
-    
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
-        
+
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
-        
+
         # Validate AutoDeco config
         if not hasattr(config, 'base_model_type'):
             raise ValueError(
                 "This model requires an AutoDeco config with 'base_model_type'. "
                 "Please use merge_autodeco.py to create a complete AutoDeco checkpoint."
             )
-        
+
         self.config = config
         self.lora_config = lora_config
         self.quant_config = quant_config
-        
+
         base_model_type = config.base_model_type
         use_enhanced_features = getattr(config, 'use_enhanced_features', True)
         self.enable_temperature_head = getattr(config, 'enable_temperature_head', True)
         self.enable_top_p_head = getattr(config, 'enable_top_p_head', True)
-        
+
         logger.info("="*80)
         logger.info("Initializing AutoDeco model for vLLM:")
         logger.info(f"  - base_model_type: {base_model_type}")
@@ -86,28 +86,28 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         logger.info(f"  - enable_temperature_head: {self.enable_temperature_head}")
         logger.info(f"  - enable_top_p_head: {self.enable_top_p_head}")
         logger.info("="*80)
-        
+
         # Get base model class
         base_model_class = self._get_base_model_class(base_model_type)
-        
+
         if base_model_class is None:
             raise ValueError(
                 f"Unsupported base model type: {base_model_type}. "
                 f"Supported types: qwen2, qwen3, qwen2_moe, qwen3_moe, gpt_oss, llama, mistral, mixtral, deepseek_v3"
             )
-        
+
         logger.info(f"  - Loading base model class: {base_model_class.__name__}")
-        
+
         # Create base model (self.llm)
         # Note: We prefix with "llm" so weights are loaded as llm.*
         self.llm = base_model_class(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "llm")
         )
-        
+
         # Get hidden size
         hidden_size = config.hidden_size
-        
+
         # Initialize AutoDeco heads
         self.temp_head = TempHead(hidden_size) if self.enable_temperature_head else None
         self.top_p_head = None
@@ -122,7 +122,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                     "AutoDeco config enables top-p head without temperature head. "
                     "Using a constant temperature input (1.0) for top-p features."
                 )
-        
+
         # Initialize logits processor
         self.logits_processor = LogitsProcessor(config.vocab_size)
 
@@ -131,21 +131,21 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             self.make_empty_intermediate_tensors = (
                 self.llm.make_empty_intermediate_tensors
             )
-        
+
         # For LoRA support
         if hasattr(self.llm, 'packed_modules_mapping'):
             self.packed_modules_mapping = self.llm.packed_modules_mapping
-        
+
         logger.info("✓ AutoDeco model initialized successfully")
         logger.info("="*80)
-    
+
     def _get_base_model_class(self, base_model_type: str):
         """
         Dynamically import and return the base model class.
-        
+
         Args:
             base_model_type: Model type from config (e.g., 'qwen2', 'qwen3', 'gpt_oss')
-        
+
         Returns:
             Base model class or None if not supported
         """
@@ -161,32 +161,32 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             'mixtral': ('mixtral', 'MixtralForCausalLM'),
             "deepseek_v3": ("deepseek_v2", "DeepseekV3ForCausalLM"),
         }
-        
+
         if base_model_type not in MODEL_REGISTRY:
             logger.warning(f"Unknown base model type: {base_model_type}")
             return None
-        
+
         module_name, class_name = MODEL_REGISTRY[base_model_type]
-        
+
         try:
             # Import the module
             module = __import__(
                 f'vllm.model_executor.models.{module_name}',
                 fromlist=[class_name]
             )
-            
+
             # Get the class
             model_class = getattr(module, class_name)
             return model_class
-            
+
         except (ImportError, AttributeError) as e:
             logger.error(f"Failed to load {class_name} from {module_name}: {e}")
             return None
-    
+
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Get input embeddings from base model"""
         return self.llm.get_input_embeddings(input_ids)
-    
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -196,7 +196,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Union[torch.Tensor, IntermediateTensors]:
         """
         Forward pass through base model to get hidden states.
-        
+
         This is called during prefill and decode phases.
         """
         hidden_states = self.llm.forward(
@@ -206,7 +206,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             inputs_embeds=inputs_embeds,
         )
         return hidden_states
-    
+
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
@@ -214,14 +214,14 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Compute logits with dynamic temperature and top-p.
-        
+
         This applies the AutoDeco heads to predict temperature and top_p
         for each token, then uses these for sampling.
-        
+
         Args:
             hidden_states: Hidden states from forward pass
             sampling_metadata: Sampling parameters
-        
+
         Returns:
             Tuple of (logits, temperatures, top_ps) when using AutoDeco heads,
             or just logits for standard models
@@ -251,19 +251,19 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             temp_head=None,
             top_p_head=None,
         )
-    
+
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
         """
         Load weights for complete AutoDeco model.
-        
+
         Expected weight structure (from merged checkpoint):
         - llm.* : Base model weights
         - temp_head.* : Temperature head weights
         - top_p_head.* : Top-p head weights
-        
+
         Args:
             weights: Iterable of (name, tensor) pairs from checkpoint
-        
+
         Returns:
             Set of loaded parameter names
         """
@@ -292,27 +292,27 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                 "Skipping %d top_p_head.* weights (top-p head disabled).",
                 skipped_top_p,
             )
-        
+
         # Use AutoWeightsLoader to handle all weights automatically
         # It will match prefixes: llm.*, temp_head.*, top_p_head.*
         loader = AutoWeightsLoader(
             self,
             skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
         )
-        
+
         loaded_params = loader.load_weights(filtered_weights)
-        
+
         logger.info(f"✓ Successfully loaded {len(loaded_params)} parameters")
-        
+
         # Log breakdown by component
         llm_params = sum(1 for p in loaded_params if p.startswith('llm.'))
         temp_head_params = sum(1 for p in loaded_params if p.startswith('temp_head.'))
         top_p_head_params = sum(1 for p in loaded_params if p.startswith('top_p_head.'))
-        
+
         logger.info(f"  - Base model (llm.*): {llm_params} parameters")
         logger.info(f"  - Temperature head (temp_head.*): {temp_head_params} parameters")
         logger.info(f"  - Top-p head (top_p_head.*): {top_p_head_params} parameters")
-        
+
         return loaded_params
 
 

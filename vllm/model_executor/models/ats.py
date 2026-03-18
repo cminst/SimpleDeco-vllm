@@ -12,7 +12,7 @@ from vllm.distributed import get_pp_group
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
 from .ats_head import BaseATSHead, build_ats_head
