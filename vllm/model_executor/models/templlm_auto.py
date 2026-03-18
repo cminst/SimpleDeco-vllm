@@ -28,6 +28,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
+from safetensors import safe_open
 
 from transformers import (
     AutoModelForCausalLM,
@@ -211,8 +212,14 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         logger.info(f"Loading base model from {base_model_path}")
         logger.info(f"Base model type: {config.base_model_type}")
 
+        if kwargs.get("init_base_model_from_config"):
+            logger.info("Initializing base model architecture from embedded config")
+            self.llm = AutoModelForCausalLM.from_config(
+                self._build_base_model_config(config),
+                **self._get_base_model_init_kwargs(config, kwargs, from_config=True),
+            )
         # For loading from pretrained AutoDeco checkpoint, base model might already be loaded
-        if kwargs.get("load_base_model") is False:
+        elif kwargs.get("load_base_model") is False:
             # This will be used when loading from a saved AutoDeco checkpoint
             logger.info("Skipping base model loading (will be loaded from checkpoint)")
             # Create a placeholder that will be populated by from_pretrained
@@ -296,6 +303,106 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
                 top_p_head_state[key[len("top_p_head."):]] = value
 
         return temp_head_state, top_p_head_state
+
+    @staticmethod
+    def _resolve_torch_dtype(config: AutoDecoModelForCausalLMConfig, kwargs: dict) -> Optional[torch.dtype]:
+        if hasattr(config, "torch_dtype") and config.torch_dtype is not None:
+            return config.torch_dtype
+        if hasattr(config, "dtype") and config.dtype is not None:
+            return config.dtype
+        if kwargs.get("torch_dtype", None) is not None:
+            return kwargs.get("torch_dtype")
+        if kwargs.get("dtype", None) is not None:
+            return kwargs.get("dtype")
+        return None
+
+    @classmethod
+    def _get_base_model_init_kwargs(
+        cls,
+        config: AutoDecoModelForCausalLMConfig,
+        kwargs: dict,
+        *,
+        from_config: bool,
+    ) -> dict:
+        base_model_kwargs: dict = {}
+        torch_dtype = cls._resolve_torch_dtype(config, kwargs)
+        if torch_dtype is not None:
+            base_model_kwargs["torch_dtype"] = torch_dtype
+
+        for key in ("attn_implementation", "trust_remote_code"):
+            if kwargs.get(key, None) is not None:
+                base_model_kwargs[key] = kwargs.get(key)
+
+        if not from_config:
+            for key in ("device_map", "quantization_config", "revision", "low_cpu_mem_usage"):
+                if kwargs.get(key, None) is not None:
+                    base_model_kwargs[key] = kwargs.get(key)
+
+        return base_model_kwargs
+
+    @staticmethod
+    def _build_base_model_config(config: AutoDecoModelForCausalLMConfig) -> PretrainedConfig:
+        base_model_type = getattr(config, "base_model_type", None)
+        if not base_model_type:
+            raise ValueError("Merged AutoDeco checkpoint is missing base_model_type in config.json")
+
+        config_dict = config.to_dict() if hasattr(config, "to_dict") else {}
+        for key in (
+            "enable_temperature_head",
+            "enable_top_p_head",
+            "use_enhanced_features",
+            "train_temp",
+            "train_top_p",
+            "base_model_name_or_path",
+            "base_model_type",
+            "model_type",
+            "architectures",
+        ):
+            config_dict.pop(key, None)
+
+        try:
+            base_model_config = AutoConfig.for_model(base_model_type, **config_dict)
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to reconstruct base model config for merged AutoDeco checkpoint with base_model_type={base_model_type!r}"
+            ) from exc
+
+        base_model_name_or_path = getattr(config, "base_model_name_or_path", None)
+        if base_model_name_or_path is not None:
+            base_model_config._name_or_path = base_model_name_or_path
+        return base_model_config
+
+    @staticmethod
+    def _has_llm_weights(keys) -> bool:
+        return any(key.startswith("llm.") for key in keys)
+
+    @classmethod
+    def _is_merged_checkpoint(cls, checkpoint_path: Union[str, os.PathLike]) -> bool:
+        checkpoint_dir = Path(checkpoint_path)
+        if not checkpoint_dir.is_dir():
+            return False
+
+        index_path = checkpoint_dir / "model.safetensors.index.json"
+        if index_path.is_file():
+            with open(index_path, "r", encoding="utf-8") as f:
+                weight_map = json.load(f).get("weight_map", {})
+            if cls._has_llm_weights(weight_map.keys()):
+                return True
+
+        for weights_path in sorted(checkpoint_dir.glob("*.safetensors")):
+            with safe_open(str(weights_path), framework="pt", device="cpu") as handle:
+                if cls._has_llm_weights(handle.keys()):
+                    return True
+
+        for weights_path in sorted(checkpoint_dir.glob("*.bin")):
+            try:
+                state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+            except TypeError:
+                state_dict = torch.load(weights_path, map_location="cpu")
+            if isinstance(state_dict, dict) and cls._has_llm_weights(state_dict.keys()):
+                return True
+
+        return False
 
     @classmethod
     def _to_autodeco_config(
@@ -387,6 +494,16 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
             return cls(config, base_model_args=model_args, base_model_kwargs=kwargs)
 
         checkpoint_path = Path(pretrained_model_name_or_path)
+        if cls._is_merged_checkpoint(checkpoint_path):
+            logger.info("Loading AutoDeco model from merged checkpoint: %s", checkpoint_path)
+            return super().from_pretrained(
+                pretrained_model_name_or_path,
+                *model_args,
+                config=config,
+                init_base_model_from_config=True,
+                **kwargs,
+            )
+
         logger.info("Loading AutoDeco model from heads-only checkpoint: %s", checkpoint_path)
         logger.info(
             "  - base_model_type=%s, base_model_name_or_path=%s",
