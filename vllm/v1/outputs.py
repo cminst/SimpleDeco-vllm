@@ -4,7 +4,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, NamedTuple, TypeAlias, TypeVar, Optional
 
 import numpy as np
 import torch
