@@ -4,7 +4,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple, TypeAlias, TypeVar, Optional
+from typing import TYPE_CHECKING, NamedTuple, TypeAlias, TypeVar
 
 import numpy as np
 import torch
@@ -248,16 +248,16 @@ class ModelRunnerOutput:
     ec_connector_output: ECConnectorOutput | None = None
 
     # req_id -> num_nans_in_logits
-    num_nans_in_logits: Optional[dict[str, int]] = None
+    num_nans_in_logits: dict[str, int] | None = None
 
     # Per-request dynamic or derived temperatures for each request.
     # ATS checkpoints report the reciprocal of the raw ATS scale here.
     # [num_reqs]
-    temperatures: Optional[list[float]] = None
+    temperatures: list[float] | None = None
     # [num_reqs] - top_p values used for each request
-    top_ps: Optional[list[float]] = None
+    top_ps: list[float] | None = None
     # [num_reqs] - raw ATS temperature scales used for each request
-    ats_temperature_scales: Optional[list[float]] = None
+    ats_temperature_scales: list[float] | None = None
 
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None

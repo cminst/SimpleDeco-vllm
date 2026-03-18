@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import torch
@@ -185,7 +187,7 @@ class XPUMLASparseImpl(SparseMLAAttentionImpl[XPUMLASparseMetadata]):
         kv_sharing_target_layer_name: str | None,
         # MLA Specific Arguments
         topk_indice_buffer: torch.Tensor | None = None,
-        indexer: Optional["Indexer"] = None,
+        indexer: Indexer | None = None,
         **mla_args,
     ) -> None:
         self.num_heads = num_heads

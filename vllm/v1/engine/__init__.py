@@ -167,9 +167,9 @@ class EngineCoreOutput(
     num_nans_in_logits: int = 0
 
     # Dynamic sampling or ATS observability metadata.
-    temps: Optional[list[float]] = None
-    top_p: Optional[list[float]] = None
-    ats_temperature_scales: Optional[list[float]] = None
+    temps: list[float] | None = None
+    top_p: list[float] | None = None
+    ats_temperature_scales: list[float] | None = None
     
     @property
     def finished(self) -> bool:

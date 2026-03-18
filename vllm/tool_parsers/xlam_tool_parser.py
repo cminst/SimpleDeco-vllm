@@ -3,7 +3,7 @@
 # ruff: noqa
 import json
 from collections.abc import Sequence
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 import regex as re
 from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -61,7 +61,7 @@ class xLAMToolParser(ToolParser):
 
     def preprocess_model_output(
         self, model_output: str
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None]:
         """
         Preprocess the model output to extract content and potential tool calls.
         Returns:

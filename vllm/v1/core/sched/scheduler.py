@@ -1641,9 +1641,9 @@ class Scheduler(SchedulerInterface):
         self,
         request: Request,
         new_token_ids: list[int],
-        temperatures: Optional[list[float]] = None,
-        top_ps: Optional[list[float]] = None,
-        ats_temperature_scales: Optional[list[float]] = None,
+        temperatures: list[float] | None = None,
+        top_ps: list[float] | None = None,
+        ats_temperature_scales: list[float] | None = None,
     ) -> tuple[list[int], bool]:
         # Append generated tokens and check for stop. Note that if
         # a request is still being prefilled, we expect the model runner

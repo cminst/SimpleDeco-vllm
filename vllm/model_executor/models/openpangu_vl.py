@@ -22,7 +22,7 @@
 
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import lru_cache, partial
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal
 
 import torch
 import torch.nn as nn
@@ -1285,7 +1285,7 @@ def _fuse_mean_std_and_rescale_factor(
     image_std: float | list[float] | None = None,
     do_rescale: bool | None = None,
     rescale_factor: float | None = None,
-    device: Optional["torch.device"] = None,
+    device: torch.device | None = None,
 ) -> tuple:
     if do_rescale and do_normalize:
         # Fused rescale and normalize

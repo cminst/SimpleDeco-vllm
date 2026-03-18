@@ -24,7 +24,7 @@ Usage:
     llm = LLM(model="./full-checkpoint", trust_remote_code=True)
 """
 
-from typing import Iterable, List, Optional, Set, Tuple, Union
+from typing import Iterable, List, Set, Tuple, Union
 
 import torch
 from torch import nn
@@ -196,8 +196,8 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        intermediate_tensors: Optional[IntermediateTensors] = None,
-        inputs_embeds: Optional[torch.Tensor] = None,
+        intermediate_tensors: IntermediateTensors | None = None,
+        inputs_embeds: torch.Tensor | None = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
         """
         Forward pass through base model to get hidden states.
@@ -246,7 +246,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     def compute_base_logits(
         self,
         hidden_states: torch.Tensor,
-        sampling_metadata: Optional[SamplingMetadata] = None,
+        sampling_metadata: SamplingMetadata | None = None,
     ) -> torch.Tensor:
         """Compute logits without running the AutoDeco heads."""
         return self.logits_processor(
@@ -261,7 +261,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         self,
         logits: Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         sampling_metadata: SamplingMetadata,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """
         Sample next tokens from logits with dynamic temperature and top-p.
         

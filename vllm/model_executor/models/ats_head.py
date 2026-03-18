@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch import nn
@@ -156,8 +156,8 @@ class SelfAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.size()
         query_states = self.q_proj(hidden_states).view(
@@ -236,8 +236,8 @@ class DecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -286,8 +286,8 @@ class BaseATSHead(nn.Module):
     def get_head_output(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -297,8 +297,8 @@ class BaseATSHead(nn.Module):
         hidden_states: torch.Tensor,
         logits: torch.Tensor,
         lm_head_weight: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         features = self.construct_features(
             hidden_states=hidden_states,
@@ -330,8 +330,8 @@ class LinearATSHead(BaseATSHead):
     def get_head_output(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         del attention_mask, position_ids
         return self.linear(features.to(self.linear.weight.dtype))
@@ -352,8 +352,8 @@ class MLPATSHead(BaseATSHead):
     def get_head_output(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         del attention_mask, position_ids
         features = features.to(self.linear.weight.dtype)
@@ -393,8 +393,8 @@ class TransformerATSHead(BaseATSHead):
     def get_head_output(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         features = features.to(self.linear.weight.dtype)
         hidden_states = self.transformer(

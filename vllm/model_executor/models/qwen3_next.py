@@ -4,10 +4,7 @@
 
 from collections.abc import Iterable
 from itertools import islice
-<<<<<<< HEAD
 from typing import Optional
-=======
->>>>>>> upstream/main
 
 import torch
 from einops import rearrange
@@ -1377,12 +1374,7 @@ class Qwen3NextModel(nn.Module):
         )
 
         if get_pp_group().is_last_rank:
-<<<<<<< HEAD
-            self.norm = Qwen3NextRMSNorm(config.hidden_size,
-                                         eps=config.rms_norm_eps)
-=======
             self.norm = Qwen3NextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
->>>>>>> upstream/main
         else:
             self.norm = PPMissingLayer()
 
@@ -1409,9 +1401,6 @@ class Qwen3NextModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-<<<<<<< HEAD
-        for layer in islice(self.layers, self.start_layer, self.end_layer):
-=======
         aux_hidden_states = []
         for layer_idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
@@ -1421,7 +1410,6 @@ class Qwen3NextModel(nn.Module):
                 aux_hidden_states.append(
                     hidden_states + residual if residual is not None else hidden_states
                 )
->>>>>>> upstream/main
             hidden_states, residual = layer(
                 positions=positions,
                 hidden_states=hidden_states,

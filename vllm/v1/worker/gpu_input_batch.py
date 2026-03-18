@@ -44,8 +44,8 @@ class CachedRequestState:
     lora_request: LoRARequest | None = None
 
     # AutoDeco: Store original user sampling params (before any AutoDeco scaling)
-    original_temperature: Optional[float] = None
-    original_top_p: Optional[float] = None
+    original_temperature: float | None = None
+    original_top_p: float | None = None
 
     def __post_init__(self):
         self.num_prompt_tokens = len(self.prompt_token_ids)

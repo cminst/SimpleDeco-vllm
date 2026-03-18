@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import socket
 import struct
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch.distributed import Backend, ProcessGroup, Store
@@ -286,7 +286,7 @@ class StatelessGroupCoordinator(GroupCoordinator):
         self,
         tensor_dict: dict[str, torch.Tensor | Any],
         dst: int | None = None,
-        all_gather_group: Optional["GroupCoordinator"] = None,
+        all_gather_group: GroupCoordinator | None = None,
         all_gather_tensors: dict[str, bool] | None = None,
     ) -> dict[str, torch.Tensor | Any] | None:
         if self.world_size == 1:
@@ -312,7 +312,7 @@ class StatelessGroupCoordinator(GroupCoordinator):
     def recv_tensor_dict(
         self,
         src: int | None = None,
-        all_gather_group: Optional["GroupCoordinator"] = None,
+        all_gather_group: GroupCoordinator | None = None,
         all_gather_tensors: dict[str, bool] | None = None,
     ) -> dict[str, torch.Tensor | Any] | None:
         if self.world_size == 1:

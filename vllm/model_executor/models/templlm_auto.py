@@ -24,7 +24,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -46,9 +46,9 @@ logger = logging.get_logger(__name__)
 
 def load_balancing_loss_func(
     gate_logits: Union[torch.Tensor, tuple[torch.Tensor], None],
-    num_experts: Optional[int] = None,
+    num_experts: int | None = None,
     top_k=2,
-    attention_mask: Optional[torch.Tensor] = None,
+    attention_mask: torch.Tensor | None = None,
 ) -> Union[torch.Tensor, int]:
     r"""
     Computes auxiliary load balancing loss as in Switch Transformer - implemented in Pytorch.
@@ -130,18 +130,18 @@ class AutoDecoOutputWithPast(ModelOutput):
     Output class for AutoDeco models with past key values.
     Compatible with both standard and MoE models.
     """
-    loss: Optional[torch.FloatTensor] = None
-    temp_loss: Optional[torch.FloatTensor] = None
-    top_p_loss: Optional[torch.FloatTensor] = None
-    aux_loss: Optional[torch.FloatTensor] = None  # For MoE models
-    lm_loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
-    temp_logits: Optional[torch.FloatTensor] = None
-    top_p_logits: Optional[torch.FloatTensor] = None
-    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
-    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    router_logits: Optional[Tuple[torch.FloatTensor, ...]] = None  # For MoE models
+    loss: torch.FloatTensor | None = None
+    temp_loss: torch.FloatTensor | None = None
+    top_p_loss: torch.FloatTensor | None = None
+    aux_loss: torch.FloatTensor | None = None  # For MoE models
+    lm_loss: torch.FloatTensor | None = None
+    logits: torch.FloatTensor | None = None
+    temp_logits: torch.FloatTensor | None = None
+    top_p_logits: torch.FloatTensor | None = None
+    past_key_values: Tuple[Tuple[torch.FloatTensor]] | None = None
+    hidden_states: Tuple[torch.FloatTensor, ...] | None = None
+    attentions: Tuple[torch.FloatTensor, ...] | None = None
+    router_logits: Tuple[torch.FloatTensor, ...] | None = None  # For MoE models
 
 
 class AutoDecoModelForCausalLMConfig(PretrainedConfig):
@@ -153,7 +153,7 @@ class AutoDecoModelForCausalLMConfig(PretrainedConfig):
         enable_temperature_head: bool = True,
         enable_top_p_head: bool = True,
         use_enhanced_features: bool = True,
-        base_model_name_or_path: Optional[str] = None,
+        base_model_name_or_path: str | None = None,
         train_temp: bool = False,
         train_top_p: bool = False,
         **kwargs,  # All base model config parameters
@@ -305,7 +305,7 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         return temp_head_state, top_p_head_state
 
     @staticmethod
-    def _resolve_torch_dtype(config: AutoDecoModelForCausalLMConfig, kwargs: dict) -> Optional[torch.dtype]:
+    def _resolve_torch_dtype(config: AutoDecoModelForCausalLMConfig, kwargs: dict) -> torch.dtype | None:
         if hasattr(config, "torch_dtype") and config.torch_dtype is not None:
             return config.torch_dtype
         if hasattr(config, "dtype") and config.dtype is not None:
@@ -409,9 +409,9 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         cls,
         config: PretrainedConfig,
         pretrained_model_name_or_path: str,
-        train_temp: Optional[bool],
-        train_top_p: Optional[bool],
-        use_enhanced_features: Optional[bool],
+        train_temp: bool | None,
+        train_top_p: bool | None,
+        use_enhanced_features: bool | None,
     ) -> AutoDecoModelForCausalLMConfig:
         if isinstance(config, AutoDecoModelForCausalLMConfig):
             autodeco_config = config
@@ -442,10 +442,10 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         cls,
         pretrained_model_name_or_path: str,
         *model_args,
-        config: Optional[AutoDecoModelForCausalLMConfig] = None,
-        train_temp: Optional[bool] = None,
-        train_top_p: Optional[bool] = None,
-        use_enhanced_features: Optional[bool] = None,
+        config: AutoDecoModelForCausalLMConfig | None = None,
+        train_temp: bool | None = None,
+        train_top_p: bool | None = None,
+        use_enhanced_features: bool | None = None,
         **kwargs,
     ):
         """
@@ -568,13 +568,13 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
         self,
         save_directory: str,
         is_main_process: bool = True,
-        state_dict: Optional[dict] = None,
+        state_dict: dict | None = None,
         save_function: callable = torch.save,
         push_to_hub: bool = False,
         max_shard_size: Union[int, str] = "5GB",
         safe_serialization: bool = True,
-        variant: Optional[str] = None,
-        token: Optional[Union[str, bool]] = None,
+        variant: str | None = None,
+        token: Union[str, bool] | None = None,
         save_peft_format: bool = True,
         **kwargs
     ):
@@ -817,17 +817,17 @@ class AutoDecoModelForCausalLM(PreTrainedModel, GenerationMixin):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_router_logits: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        output_router_logits: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         top_p_loss_method: str = 'soft',  # 'soft' or 'mse'
         **kwargs,

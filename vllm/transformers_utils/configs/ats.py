@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from typing import Any, Optional
+from typing import Any
 
 from transformers import PretrainedConfig
 
@@ -12,8 +12,8 @@ class ATSConfig(PretrainedConfig):
 
     def __init__(
         self,
-        base_model_name_or_path: Optional[str] = None,
-        base_model_type: Optional[str] = None,
+        base_model_name_or_path: str | None = None,
+        base_model_type: str | None = None,
         calibration_type: str = "transformer",
         feature_key: str = "hidden_states",
         freeze_base_model: bool = True,
@@ -24,11 +24,11 @@ class ATSConfig(PretrainedConfig):
         smooth_loss_weight: float = 0.5,
         label_smoothing_type: str = "uniform",
         smoothing_topk: int = 5,
-        intermediate_size: Optional[int] = None,
+        intermediate_size: int | None = None,
         max_position_embeddings: int = 4096,
         attention_dropout: float = 0.0,
-        num_attention_heads: Optional[int] = None,
-        num_key_value_heads: Optional[int] = None,
+        num_attention_heads: int | None = None,
+        num_key_value_heads: int | None = None,
         hidden_act: str = "silu",
         rope_theta: float = 10000.0,
         attention_bias: bool = False,

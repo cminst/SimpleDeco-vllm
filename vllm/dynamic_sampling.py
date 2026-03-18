@@ -3,7 +3,7 @@
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
 import torch
 
@@ -51,7 +51,7 @@ _POLICY_DEFAULTS: dict[str, dict[str, float]] = {
 
 
 def validate_dynamic_sampling_extra_args(
-    extra_args: Optional[Mapping[str, Any]],
+    extra_args: Mapping[str, Any] | None,
 ) -> None:
     if not extra_args:
         return
@@ -67,8 +67,8 @@ def validate_dynamic_sampling_extra_args(
 
 
 def get_dynamic_sampling_config(
-    extra_args: Optional[Mapping[str, Any]],
-) -> Optional[DynamicSamplingConfig]:
+    extra_args: Mapping[str, Any] | None,
+) -> DynamicSamplingConfig | None:
     if not extra_args or DYNAMIC_SAMPLING_POLICY_ARG not in extra_args:
         return None
     return _parse_dynamic_sampling_config(extra_args)

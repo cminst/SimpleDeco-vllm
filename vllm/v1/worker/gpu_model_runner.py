@@ -826,9 +826,8 @@ class GPUModelRunner(
                     pin_memory=self.pin_memory,
                 )
 
-    def _get_dynamic_sampling_configs(self) -> list[Optional[
-            DynamicSamplingConfig]]:
-        configs: list[Optional[DynamicSamplingConfig]] = []
+    def _get_dynamic_sampling_configs(self) -> list[DynamicSamplingConfig | None]:
+        configs: list[DynamicSamplingConfig | None] = []
         for req_id in self.input_batch.req_ids:
             req_state = self.requests[req_id]
             sampling_params = req_state.sampling_params
@@ -873,7 +872,7 @@ class GPUModelRunner(
     def _compute_logits_with_dynamic_sampling(
         self,
         sample_hidden_states: torch.Tensor,
-        dynamic_sampling_configs: list[Optional[DynamicSamplingConfig]],
+        dynamic_sampling_configs: list[DynamicSamplingConfig | None],
     ) -> tuple[
         torch.Tensor,
         torch.Tensor | None,

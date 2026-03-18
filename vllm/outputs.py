@@ -51,9 +51,9 @@ class CompletionOutput:
     finish_reason: str | None = None
     stop_reason: int | str | None = None
     lora_request: LoRARequest | None = None
-    temperatures: Optional[list[float]] = None
-    top_ps: Optional[list[float]] = None
-    ats_temperature_scales: Optional[list[float]] = None
+    temperatures: list[float] | None = None
+    top_ps: list[float] | None = None
+    ats_temperature_scales: list[float] | None = None
     routed_experts: np.ndarray | None = None  # [seq_len,layer_num,topk]
 
     def finished(self) -> bool:

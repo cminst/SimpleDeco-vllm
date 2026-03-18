@@ -133,7 +133,7 @@ class Request:
 
         self.spec_token_ids: list[int] = []
         self.num_computed_tokens = 0
-        self.cache_salt: Optional[str] = cache_salt
+        self.cache_salt: str | None = cache_salt
 
         # Per-token decoding metadata for generated tokens.
         self._output_temperatures: list[float] = []
