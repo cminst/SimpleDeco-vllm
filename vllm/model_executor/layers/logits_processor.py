@@ -11,7 +11,7 @@ from vllm.distributed import (
 )
 from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.platforms import current_platform
 
 
