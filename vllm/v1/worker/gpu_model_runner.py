@@ -826,6 +826,17 @@ class GPUModelRunner(
                     pin_memory=self.pin_memory,
                 )
 
+        # Model weight offloader
+        # Make sure this is called before any get_offloader call
+        set_offloader(create_offloader(self.offload_config))
+
+        # Ephemeral state transferred between execute_model() and sample_tokens().
+        self.execute_model_state: ExecuteModelState | None = None
+        self.kv_connector_output: KVConnectorOutput | None = None
+        self.mamba_state_idx: dict[str, int] = {}
+        self._mamba_copy_bufs: mamba_utils.MambaCopyBuffers | None = None
+        self.layerwise_nvtx_hooks_registered = False
+
     def _get_dynamic_sampling_configs(self) -> list[DynamicSamplingConfig | None]:
         configs: list[DynamicSamplingConfig | None] = []
         for req_id in self.input_batch.req_ids:
@@ -857,17 +868,6 @@ class GPUModelRunner(
             top_ps[index] = sampling_params.top_p
 
         return temperatures, top_ps
-
-        # Model weight offloader
-        # Make sure this is called before any get_offloader call
-        set_offloader(create_offloader(self.offload_config))
-
-        # Ephemeral state transferred between execute_model() and sample_tokens().
-        self.execute_model_state: ExecuteModelState | None = None
-        self.kv_connector_output: KVConnectorOutput | None = None
-        self.mamba_state_idx: dict[str, int] = {}
-        self._mamba_copy_bufs: mamba_utils.MambaCopyBuffers | None = None
-        self.layerwise_nvtx_hooks_registered = False
 
     def _compute_logits_with_dynamic_sampling(
         self,
