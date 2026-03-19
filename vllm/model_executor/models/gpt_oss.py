@@ -1108,11 +1108,17 @@ class GptOssModel(nn.Module, EagleModelMixin):
         ep_rank_start = ep_rank * experts_per_rank
         ep_rank_end = (ep_rank + 1) * experts_per_rank
 
-        quant_method = (
-            self.config.quantization_config["quant_method"]
-            if hasattr(self.config, "quantization_config")
-            else None
-        )
+        quant_method = None
+        if hasattr(self.config, "quantization_config"):
+            hf_quant_config = self.config.quantization_config
+            if isinstance(hf_quant_config, dict):
+                quant_method = hf_quant_config.get("quant_method")
+
+        if quant_method is None:
+            quant_method = getattr(self.vllm_config.model_config, "quantization", None)
+
+        if quant_method is None and self.vllm_config.quant_config is not None:
+            quant_method = self.vllm_config.quant_config.get_name()
 
         if quant_method == "mxfp4":
             return self._load_weights_mxfp4(
