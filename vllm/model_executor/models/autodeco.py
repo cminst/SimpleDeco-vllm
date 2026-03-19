@@ -24,7 +24,6 @@ Usage:
     llm = LLM(model="./full-checkpoint", trust_remote_code=True)
 """
 
-import copy
 from typing import Iterable, Set, Tuple, Union
 
 import torch
@@ -39,6 +38,7 @@ from vllm.sequence import IntermediateTensors
 
 from .autodeco_heads import TempHead, TopPHead
 from .interfaces import SupportsLoRA, SupportsPP
+from .utils import init_vllm_registered_model
 
 logger = init_logger(__name__)
 
@@ -138,14 +138,15 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
 
         logger.info(f"  - Loading base model class: {base_model_class.__name__}")
         base_model_config = _build_base_model_config(config)
-        base_vllm_config = copy.deepcopy(vllm_config)
-        base_vllm_config.model_config.hf_config = base_model_config
 
-        # Create base model (self.llm)
-        # Note: We prefix with "llm" so weights are loaded as llm.*
-        self.llm = base_model_class(
-            vllm_config=base_vllm_config,
-            prefix=maybe_prefix(prefix, "llm")
+        # Initialize the wrapped base model through vLLM's nested-model
+        # helper so it sees the correct hf_config/architecture context during
+        # layer construction and post-load processing.
+        self.llm = init_vllm_registered_model(
+            vllm_config=vllm_config,
+            hf_config=base_model_config,
+            architectures=[base_model_class.__name__],
+            prefix=maybe_prefix(prefix, "llm"),
         )
 
         # Get hidden size
