@@ -75,6 +75,10 @@ class ATSModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.llm.get_input_embeddings(input_ids)
 
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Expose the standard vLLM embedding hook via the wrapped base model."""
+        return self.llm.embed_input_ids(input_ids)
+
     def _capture_runtime_metadata(self) -> dict[str, torch.Tensor] | None:
         attn_metadata = get_forward_context().attn_metadata
         if isinstance(attn_metadata, dict):

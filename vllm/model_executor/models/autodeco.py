@@ -190,6 +190,10 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         """Get input embeddings from base model"""
         return self.llm.get_input_embeddings(input_ids)
 
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Expose the standard vLLM embedding hook via the wrapped base model."""
+        return self.llm.embed_input_ids(input_ids)
+
     def forward(
         self,
         input_ids: torch.Tensor,
