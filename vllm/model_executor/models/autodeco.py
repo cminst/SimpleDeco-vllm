@@ -24,10 +24,12 @@ Usage:
     llm = LLM(model="./full-checkpoint", trust_remote_code=True)
 """
 
+import copy
 from typing import Iterable, Set, Tuple, Union
 
 import torch
 from torch import nn
+from transformers import AutoConfig, PretrainedConfig
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
@@ -43,6 +45,41 @@ logger = init_logger(__name__)
 
 def maybe_prefix(prefix: str, name: str) -> str:
     return name if not prefix else f"{prefix}.{name}"
+
+
+def _build_base_model_config(config: PretrainedConfig) -> PretrainedConfig:
+    base_model_type = getattr(config, "base_model_type", None)
+    if not base_model_type:
+        raise ValueError(
+            "Merged AutoDeco checkpoint is missing base_model_type in config.json"
+        )
+
+    config_dict = config.to_dict() if hasattr(config, "to_dict") else {}
+    for key in (
+        "enable_temperature_head",
+        "enable_top_p_head",
+        "use_enhanced_features",
+        "train_temp",
+        "train_top_p",
+        "base_model_name_or_path",
+        "base_model_type",
+        "model_type",
+        "architectures",
+    ):
+        config_dict.pop(key, None)
+
+    try:
+        base_model_config = AutoConfig.for_model(base_model_type, **config_dict)
+    except Exception as exc:
+        raise ValueError(
+            "Failed to reconstruct base model config for merged AutoDeco "
+            f"checkpoint with base_model_type={base_model_type!r}"
+        ) from exc
+
+    base_model_name_or_path = getattr(config, "base_model_name_or_path", None)
+    if base_model_name_or_path is not None:
+        base_model_config._name_or_path = base_model_name_or_path
+    return base_model_config
 
 
 class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
@@ -100,16 +137,19 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             )
 
         logger.info(f"  - Loading base model class: {base_model_class.__name__}")
+        base_model_config = _build_base_model_config(config)
+        base_vllm_config = copy.deepcopy(vllm_config)
+        base_vllm_config.model_config.hf_config = base_model_config
 
         # Create base model (self.llm)
         # Note: We prefix with "llm" so weights are loaded as llm.*
         self.llm = base_model_class(
-            vllm_config=vllm_config,
+            vllm_config=base_vllm_config,
             prefix=maybe_prefix(prefix, "llm")
         )
 
         # Get hidden size
-        hidden_size = config.hidden_size
+        hidden_size = base_model_config.hidden_size
 
         # Initialize AutoDeco heads
         self.temp_head = TempHead(hidden_size) if self.enable_temperature_head else None
@@ -117,7 +157,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         if self.enable_top_p_head:
             self.top_p_head = TopPHead(
                 hidden_size,
-                vocab_size=config.vocab_size,
+                vocab_size=base_model_config.vocab_size,
                 use_enhanced_features=use_enhanced_features
             )
             if not self.enable_temperature_head:
@@ -127,7 +167,7 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                 )
 
         # Initialize logits processor
-        self.logits_processor = LogitsProcessor(config.vocab_size)
+        self.logits_processor = LogitsProcessor(base_model_config.vocab_size)
 
         # Copy useful attributes from base model
         if hasattr(self.llm, 'make_empty_intermediate_tensors'):
