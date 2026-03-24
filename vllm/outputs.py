@@ -35,11 +35,13 @@ class CompletionOutput:
             to stop, None if the completion finished for some other reason
             including encountering the EOS token.
         lora_request: The LoRA request that was used to generate the output.
-        temperatures: Optional list of dynamic or derived temperatures for
-            each token. ATS checkpoints report `1 / scale` here; this is exact
-            when ATS does not normalize logits and otherwise remains a
-            temperature-like observable.
-        top_ps: Optional list of dynamic top-p values for each token.
+        temperatures: Optional token-level list of dynamic or derived
+            temperatures, or a request-level scalar when a disabled AutoDeco
+            dimension falls back to the request sampling value. ATS checkpoints
+            report `1 / scale` here; this is exact when ATS does not normalize
+            logits and otherwise remains a temperature-like observable.
+        top_ps: Optional token-level list of dynamic top-p values for each
+            token, or a request-level scalar fallback.
         ats_temperature_scales: Optional list of raw ATS temperature scales for each token.
     """
 
@@ -51,8 +53,8 @@ class CompletionOutput:
     finish_reason: str | None = None
     stop_reason: int | str | None = None
     lora_request: LoRARequest | None = None
-    temperatures: list[float] | None = None
-    top_ps: list[float] | None = None
+    temperatures: float | list[float] | None = None
+    top_ps: float | list[float] | None = None
     ats_temperature_scales: list[float] | None = None
     routed_experts: np.ndarray | None = None  # [seq_len,layer_num,topk]
 
@@ -175,19 +177,15 @@ class RequestOutput:
                         completion.finish_reason = next_completion.finish_reason
                         completion.stop_reason = next_completion.stop_reason
                         if next_completion.temperatures is not None:
-                            if completion.temperatures is None:
-                                completion.temperatures = list(
-                                    next_completion.temperatures)
-                            else:
-                                completion.temperatures.extend(
-                                    next_completion.temperatures)
+                            completion.temperatures = _merge_generation_metadata(
+                                completion.temperatures,
+                                next_completion.temperatures,
+                            )
                         if next_completion.top_ps is not None:
-                            if completion.top_ps is None:
-                                completion.top_ps = list(
-                                    next_completion.top_ps)
-                            else:
-                                completion.top_ps.extend(
-                                    next_completion.top_ps)
+                            completion.top_ps = _merge_generation_metadata(
+                                completion.top_ps,
+                                next_completion.top_ps,
+                            )
                         if next_completion.ats_temperature_scales is not None:
                             if completion.ats_temperature_scales is None:
                                 completion.ats_temperature_scales = list(
@@ -227,6 +225,29 @@ STREAM_FINISHED = RequestOutput(
     outputs=[],
     finished=True,
 )
+
+
+def _merge_generation_metadata(
+    current: float | list[float] | None,
+    incoming: float | list[float],
+) -> float | list[float]:
+    if isinstance(incoming, list):
+        if current is None:
+            return list(incoming)
+        if not isinstance(current, list):
+            raise TypeError(
+                "Cannot merge token-level metadata into scalar generation metadata."
+            )
+        current.extend(incoming)
+        return current
+
+    if current is None:
+        return incoming
+    if isinstance(current, list):
+        raise TypeError(
+            "Cannot merge scalar generation metadata into token-level metadata."
+        )
+    return incoming
 
 _O = TypeVar("_O", default=PoolingOutput)
 

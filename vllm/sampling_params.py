@@ -12,7 +12,9 @@ from typing import Any
 import msgspec
 from pydantic.dataclasses import dataclass
 
+from vllm.autodeco import normalize_autodeco_extra_args
 from vllm.config import ModelConfig, SpeculativeConfig, StructuredOutputsConfig
+from vllm.dynamic_sampling import validate_dynamic_sampling_extra_args
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.tokenizers import TokenizerLike
@@ -502,6 +504,8 @@ class SamplingParams(
                 "stop strings are only supported when detokenize is True. "
                 "Set detokenize=True to use stop."
             )
+        validate_dynamic_sampling_extra_args(self.extra_args)
+        normalize_autodeco_extra_args(self.extra_args)
 
     def _verify_greedy_sampling(self) -> None:
         if self.n > 1:

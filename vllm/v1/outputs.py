@@ -258,6 +258,10 @@ class ModelRunnerOutput:
     top_ps: list[float] | None = None
     # [num_reqs] - raw ATS temperature scales used for each request
     ats_temperature_scales: list[float] | None = None
+    # [num_reqs] - whether the public raw temperature output should be scalar
+    temperature_output_is_scalar: list[bool] | None = None
+    # [num_reqs] - whether the public raw top-p output should be scalar
+    top_p_output_is_scalar: list[bool] | None = None
 
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None

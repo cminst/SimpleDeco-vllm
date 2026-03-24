@@ -21,6 +21,11 @@ import torch.nn as nn
 from tqdm import tqdm
 
 import vllm.envs as envs
+from vllm.autodeco import (
+    AutoDecoHeadSelection,
+    get_effective_autodeco_head_selection,
+    validate_autodeco_runtime_extra_args,
+)
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.cuda_graph import CUDAGraphStat, CUDAGraphWrapper
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -848,6 +853,38 @@ class GPUModelRunner(
             configs.append(get_dynamic_sampling_config(extra_args))
         return configs
 
+    def _get_autodeco_head_selections(self) -> list[AutoDecoHeadSelection]:
+        enable_temperature_head = bool(
+            getattr(self.model, "enable_temperature_head", False)
+        )
+        enable_top_p_head = bool(getattr(self.model, "enable_top_p_head", False))
+        selections: list[AutoDecoHeadSelection] = []
+        for req_id in self.input_batch.req_ids:
+            req_state = self.requests[req_id]
+            sampling_params = req_state.sampling_params
+            extra_args = None if sampling_params is None else sampling_params.extra_args
+            validate_autodeco_runtime_extra_args(
+                extra_args,
+                is_autodeco_model=True,
+                enable_temperature_head=enable_temperature_head,
+                enable_top_p_head=enable_top_p_head,
+            )
+            selections.append(
+                get_effective_autodeco_head_selection(
+                    extra_args,
+                    enable_temperature_head=enable_temperature_head,
+                    enable_top_p_head=enable_top_p_head,
+                )
+            )
+        return selections
+
+    def _get_autodeco_output_scalar_masks(self) -> tuple[list[bool], list[bool]]:
+        selections = self._get_autodeco_head_selections()
+        return (
+            [not selection.use_temperature_head for selection in selections],
+            [not selection.use_top_p_head for selection in selections],
+        )
+
     def _get_request_sampling_tensors(
         self,
         device: torch.device,
@@ -886,65 +923,77 @@ class GPUModelRunner(
                              "model_type", None)
         is_autodeco = model_type == "autodeco"
         is_ats = model_type == "ats"
-        dynamic_sampling_indices = [
-            index for index, config in enumerate(dynamic_sampling_configs)
-            if config is not None
-        ]
 
-        if is_autodeco and dynamic_sampling_indices:
-            override_indices = torch.tensor(
-                dynamic_sampling_indices,
-                device=sample_hidden_states.device,
-                dtype=torch.long,
-            )
-            default_indices = torch.tensor(
-                [
-                    index
-                    for index, config in enumerate(dynamic_sampling_configs)
-                    if config is None
-                ],
-                device=sample_hidden_states.device,
-                dtype=torch.long,
-            )
+        if is_autodeco:
+            selections = self._get_autodeco_head_selections()
+            grouped_indices: dict[tuple[bool, bool], list[int]] = defaultdict(list)
+            for index, selection in enumerate(selections):
+                grouped_indices[
+                    (
+                        selection.use_temperature_head,
+                        selection.use_top_p_head,
+                    )
+                ].append(index)
+
             logits = None
+            for (use_temperature_head, use_top_p_head), indices in grouped_indices.items():
+                index_tensor = torch.tensor(
+                    indices,
+                    device=sample_hidden_states.device,
+                    dtype=torch.long,
+                )
+                grouped_hidden_states = sample_hidden_states.index_select(
+                    0,
+                    index_tensor,
+                )
+                if not use_temperature_head and not use_top_p_head:
+                    grouped_logits = self.model.compute_base_logits(
+                        grouped_hidden_states,
+                        None,
+                    )
+                    grouped_temps = None
+                    grouped_top_ps = None
+                else:
+                    grouped_results = self.model.compute_logits_with_head_selection(
+                        grouped_hidden_states,
+                        sampling_metadata=None,
+                        use_temperature_head=use_temperature_head,
+                        use_top_p_head=use_top_p_head,
+                    )
+                    if isinstance(grouped_results, tuple):
+                        grouped_logits, grouped_temps, grouped_top_ps = \
+                            grouped_results
+                    else:
+                        grouped_logits = grouped_results
+                        grouped_temps = None
+                        grouped_top_ps = None
 
-            override_hidden_states = sample_hidden_states.index_select(
-                0, override_indices)
-            override_logits = self.model.compute_base_logits(
-                override_hidden_states, None)
-            logits = override_logits.new_empty(
-                (sample_hidden_states.shape[0], override_logits.shape[-1]))
-            logits.index_copy_(0, override_indices, override_logits)
+                if logits is None:
+                    logits = grouped_logits.new_empty(
+                        (sample_hidden_states.shape[0], grouped_logits.shape[-1])
+                    )
+                logits.index_copy_(0, index_tensor, grouped_logits)
 
-            if len(default_indices) > 0:
-                default_hidden_states = sample_hidden_states.index_select(
-                    0, default_indices)
-                default_results = self.model.compute_logits(
-                    default_hidden_states, None)
-                if isinstance(default_results, tuple):
-                    default_logits, default_temps, default_top_ps = \
-                        default_results
-                    logits.index_copy_(0, default_indices, default_logits)
-                    if default_temps is not None:
+                if grouped_temps is not None:
+                    if dynamic_temps is None:
                         dynamic_temps = torch.full(
                             (sample_hidden_states.shape[0], 1),
                             float("nan"),
-                            device=default_temps.device,
-                            dtype=default_temps.dtype,
+                            device=grouped_temps.device,
+                            dtype=grouped_temps.dtype,
                         )
-                        dynamic_temps.index_copy_(0, default_indices,
-                                                  default_temps)
-                    if default_top_ps is not None:
+                    dynamic_temps.index_copy_(0, index_tensor, grouped_temps)
+
+                if grouped_top_ps is not None:
+                    if dynamic_top_ps is None:
                         dynamic_top_ps = torch.full(
                             (sample_hidden_states.shape[0], 1),
                             float("nan"),
-                            device=default_top_ps.device,
-                            dtype=default_top_ps.dtype,
+                            device=grouped_top_ps.device,
+                            dtype=grouped_top_ps.dtype,
                         )
-                        dynamic_top_ps.index_copy_(0, default_indices,
-                                                   default_top_ps)
-                else:
-                    logits.index_copy_(0, default_indices, default_results)
+                    dynamic_top_ps.index_copy_(0, index_tensor, grouped_top_ps)
+            assert logits is not None
         elif is_ats:
             compute_logits_and_scale = getattr(
                 self.model, "_compute_logits_and_scale", None)
@@ -4297,6 +4346,8 @@ class GPUModelRunner(
             dynamic_temps_cpu = None
             dynamic_top_ps_cpu = None
             ats_scales_cpu = None
+            temperature_output_is_scalar = None
+            top_p_output_is_scalar = None
             if is_ats and ats_temperature_scales is not None:
                 ats_temperature_scales = ats_temperature_scales.squeeze(-1)
                 safe_ats_scales = torch.clamp_min(ats_temperature_scales,
@@ -4309,6 +4360,11 @@ class GPUModelRunner(
                     dynamic_temps_cpu = sampling_temps.cpu().tolist()
                 if sampling_top_ps is not None:
                     dynamic_top_ps_cpu = sampling_top_ps.cpu().tolist()
+                if is_autodeco:
+                    (
+                        temperature_output_is_scalar,
+                        top_p_output_is_scalar,
+                    ) = self._get_autodeco_output_scalar_masks()
 
         if propose_drafts_after_bookkeeping:
             # ngram and other speculative decoding methods use the sampled
@@ -4353,6 +4409,8 @@ class GPUModelRunner(
                 temperatures=dynamic_temps_cpu,
                 top_ps=dynamic_top_ps_cpu,
                 ats_temperature_scales=ats_scales_cpu,
+                temperature_output_is_scalar=temperature_output_is_scalar,
+                top_p_output_is_scalar=top_p_output_is_scalar,
             )
 
         if not self.use_async_scheduling:

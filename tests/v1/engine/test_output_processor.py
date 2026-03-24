@@ -1156,6 +1156,9 @@ async def test_request_output_collector():
                         cumulative_logprob=(idx + 1 * 1.0),
                         logprobs=[{"a": idx, "b": idx}],
                         finish_reason="length" if (idx == NUM_REQS - 1) else None,
+                        temperatures=[idx + 0.5],
+                        top_ps=[0.9 - 0.1 * idx],
+                        ats_temperature_scales=[idx + 2.0],
                     )
                 ],
                 finished=(idx == NUM_REQS - 1),
@@ -1222,6 +1225,63 @@ async def test_request_output_collector():
     # Cumulative logprobs should be the last one.
     cumulative_logprob_expected = 1.0 * num_to_put
     assert output.outputs[0].cumulative_logprob == cumulative_logprob_expected
+
+
+@pytest.mark.asyncio
+async def test_request_output_collector_preserves_scalar_metadata():
+    outputs = [
+        RequestOutput(
+            request_id="my-request-id",
+            prompt=None,
+            prompt_token_ids=[1, 2, 3],
+            prompt_logprobs=None,
+            outputs=[
+                CompletionOutput(
+                    index=0,
+                    text="a",
+                    token_ids=[0],
+                    cumulative_logprob=1.0,
+                    logprobs=None,
+                    temperatures=1.0,
+                    top_ps=0.95,
+                )
+            ],
+            finished=False,
+        ),
+        RequestOutput(
+            request_id="my-request-id",
+            prompt=None,
+            prompt_token_ids=[1, 2, 3],
+            prompt_logprobs=None,
+            outputs=[
+                CompletionOutput(
+                    index=0,
+                    text="b",
+                    token_ids=[1],
+                    cumulative_logprob=2.0,
+                    logprobs=None,
+                    finish_reason="length",
+                    temperatures=1.0,
+                    top_ps=0.95,
+                )
+            ],
+            finished=True,
+        ),
+    ]
+
+    collector = RequestOutputCollector(
+        RequestOutputKind.DELTA, request_id="my-request-id-int"
+    )
+    for output in outputs:
+        collector.put(output)
+
+    merged = await collector.get()
+
+    assert merged.finished
+    assert merged.outputs[0].text == "ab"
+    assert merged.outputs[0].token_ids == [0, 1]
+    assert merged.outputs[0].temperatures == 1.0
+    assert merged.outputs[0].top_ps == 0.95
 
 
 @pytest.mark.asyncio

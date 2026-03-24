@@ -274,17 +274,30 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             Tuple of (logits, temperatures, top_ps) when using AutoDeco heads,
             or just logits for standard models
         """
-        # Use the logits processor with AutoDeco heads
-        # This will call temp_head and top_p_head internally and return
-        # (logits, temp, top_p) tuple
-        result = self.logits_processor(
+        return self.compute_logits_with_head_selection(
+            hidden_states,
+            sampling_metadata=sampling_metadata,
+            use_temperature_head=True,
+            use_top_p_head=True,
+        )
+
+    def compute_logits_with_head_selection(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: SamplingMetadata | None = None,
+        *,
+        use_temperature_head: bool,
+        use_top_p_head: bool,
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]]:
+        temp_head = self.temp_head if use_temperature_head else None
+        top_p_head = self.top_p_head if use_top_p_head else None
+        return self.logits_processor(
             lm_head=self.llm.lm_head,
             hidden_states=hidden_states,
             sampling_metadata=sampling_metadata,
-            temp_head=self.temp_head,
-            top_p_head=self.top_p_head,
+            temp_head=temp_head,
+            top_p_head=top_p_head,
         )
-        return result
 
     def compute_base_logits(
         self,
@@ -292,12 +305,11 @@ class AutoDecoModelForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         sampling_metadata: SamplingMetadata | None = None,
     ) -> torch.Tensor:
         """Compute logits without running the AutoDeco heads."""
-        return self.logits_processor(
-            lm_head=self.llm.lm_head,
-            hidden_states=hidden_states,
+        return self.compute_logits_with_head_selection(
+            hidden_states,
             sampling_metadata=sampling_metadata,
-            temp_head=None,
-            top_p_head=None,
+            use_temperature_head=False,
+            use_top_p_head=False,
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:

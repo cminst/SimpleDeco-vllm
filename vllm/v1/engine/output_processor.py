@@ -180,6 +180,8 @@ class RequestState:
         self.output_temperatures: list[float] = []
         self.output_top_ps: list[float] = []
         self.output_ats_temperature_scales: list[float] = []
+        self.scalar_temperature_output: float | None = None
+        self.scalar_top_p_output: float | None = None
 
         # Stream Interval
         self.stream_interval = stream_interval
@@ -414,6 +416,8 @@ class RequestState:
                     if token_ids else [])
             else:
                 temps_for_output = self.output_temperatures.copy()
+        elif self.scalar_temperature_output is not None:
+            temps_for_output = self.scalar_temperature_output
         if self.output_top_ps:
             if delta:
                 top_ps_for_output = (
@@ -421,6 +425,8 @@ class RequestState:
                     if token_ids else [])
             else:
                 top_ps_for_output = self.output_top_ps.copy()
+        elif self.scalar_top_p_output is not None:
+            top_ps_for_output = self.scalar_top_p_output
         if self.output_ats_temperature_scales:
             if delta:
                 ats_scales_for_output = (
@@ -663,9 +669,15 @@ class OutputProcessor:
 
             # Collect per-token decoding metadata.
             if engine_core_output.temps is not None:
+                req_state.scalar_temperature_output = None
                 req_state.output_temperatures.extend(engine_core_output.temps)
+            if engine_core_output.temp_scalar is not None:
+                req_state.scalar_temperature_output = engine_core_output.temp_scalar
             if engine_core_output.top_p is not None:
+                req_state.scalar_top_p_output = None
                 req_state.output_top_ps.extend(engine_core_output.top_p)
+            if engine_core_output.top_p_scalar is not None:
+                req_state.scalar_top_p_output = engine_core_output.top_p_scalar
             if engine_core_output.ats_temperature_scales is not None:
                 req_state.output_ats_temperature_scales.extend(
                     engine_core_output.ats_temperature_scales)

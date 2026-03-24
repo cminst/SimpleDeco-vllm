@@ -7,6 +7,13 @@ import pytest
 import torch
 
 from vllm import SamplingParams
+from vllm.autodeco import (
+    AUTODECO_HEADS_ARG,
+    AutoDecoHeadSelection,
+    get_effective_autodeco_head_selection,
+    get_requested_autodeco_head_selection,
+    validate_autodeco_runtime_extra_args,
+)
 from vllm.dynamic_sampling import (DYNAMIC_SAMPLING_EPS,
                                    GREEDY_TEMPERATURE,
                                    compute_dynamic_temperature,
@@ -193,3 +200,107 @@ def test_edt_rejects_negative_theta():
                 "theta": -0.1,
             },
         })
+
+
+def test_sampling_params_normalizes_autodeco_heads():
+    params = SamplingParams(extra_args={
+        AUTODECO_HEADS_ARG: "temp,top-p",
+    })
+
+    assert params.extra_args is not None
+    assert params.extra_args[AUTODECO_HEADS_ARG] == ["temperature", "top_p"]
+
+
+def test_sampling_params_rejects_unknown_autodeco_head():
+    with pytest.raises(ValueError, match="Unsupported autodeco head"):
+        SamplingParams(extra_args={
+            AUTODECO_HEADS_ARG: "entropy",
+        })
+
+
+def test_requested_autodeco_head_selection_defaults_to_both():
+    assert get_requested_autodeco_head_selection(None) == AutoDecoHeadSelection(
+        use_temperature_head=True,
+        use_top_p_head=True,
+    )
+
+
+def test_effective_autodeco_head_selection_disables_missing_checkpoint_heads():
+    selection = get_effective_autodeco_head_selection(
+        {
+            AUTODECO_HEADS_ARG: ["temperature", "top_p"],
+        },
+        enable_temperature_head=False,
+        enable_top_p_head=True,
+    )
+
+    assert selection == AutoDecoHeadSelection(
+        use_temperature_head=False,
+        use_top_p_head=True,
+    )
+
+
+def test_autodeco_requested_heads_error_when_none_are_available():
+    extra_args = {
+        AUTODECO_HEADS_ARG: "temperature",
+    }
+
+    with pytest.raises(ValueError, match="asked for checkpoint heads that are unavailable"):
+        validate_autodeco_runtime_extra_args(
+            extra_args,
+            is_autodeco_model=True,
+            enable_temperature_head=False,
+            enable_top_p_head=True,
+        )
+
+
+def test_autodeco_requested_heads_error_on_partial_overlap():
+    extra_args = {
+        AUTODECO_HEADS_ARG: "both",
+    }
+
+    with pytest.raises(ValueError, match="Missing requested heads: \\['temperature'\\]"):
+        validate_autodeco_runtime_extra_args(
+            extra_args,
+            is_autodeco_model=True,
+            enable_temperature_head=False,
+            enable_top_p_head=True,
+        )
+
+
+def test_autodeco_default_request_still_allows_partial_checkpoint_heads():
+    validate_autodeco_runtime_extra_args(
+        {},
+        is_autodeco_model=True,
+        enable_temperature_head=False,
+        enable_top_p_head=True,
+    )
+
+
+def test_autodeco_dynamic_sampling_rejects_enabled_heads():
+    extra_args = {
+        AUTODECO_HEADS_ARG: "temperature",
+        "dynamic_sampling_policy": "entropy_continuous",
+    }
+
+    with pytest.raises(ValueError, match="cannot combine `dynamic_sampling_policy`"):
+        validate_autodeco_runtime_extra_args(
+            extra_args,
+            is_autodeco_model=True,
+            enable_temperature_head=True,
+            enable_top_p_head=True,
+        )
+
+
+def test_autodeco_dynamic_sampling_allows_none_heads():
+    extra_args = {
+        AUTODECO_HEADS_ARG: "none",
+        "dynamic_sampling_policy": "entropy_continuous",
+    }
+
+    validate_autodeco_runtime_extra_args(
+        extra_args,
+        is_autodeco_model=True,
+        enable_temperature_head=True,
+        enable_top_p_head=True,
+    )

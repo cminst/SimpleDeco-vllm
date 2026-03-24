@@ -169,6 +169,8 @@ class EngineCoreOutput(
     # Dynamic sampling or ATS observability metadata.
     temps: list[float] | None = None
     top_p: list[float] | None = None
+    temp_scalar: float | None = None
+    top_p_scalar: float | None = None
     ats_temperature_scales: list[float] | None = None
     
     @property

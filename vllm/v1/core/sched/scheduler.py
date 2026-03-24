@@ -1297,6 +1297,10 @@ class Scheduler(SchedulerInterface):
         temperatures = model_runner_output.temperatures
         top_ps = model_runner_output.top_ps
         ats_temperature_scales = model_runner_output.ats_temperature_scales
+        temperature_output_is_scalar = (
+            model_runner_output.temperature_output_is_scalar
+        )
+        top_p_output_is_scalar = model_runner_output.top_p_output_is_scalar
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
         spec_decoding_stats: SpecDecodingStats | None = None
         kv_connector_stats: KVConnectorStats | None = (
@@ -1347,13 +1351,26 @@ class Scheduler(SchedulerInterface):
             # for the step reuse the same values.
             new_temps_list = None
             new_top_ps_list = None
+            temp_scalar = None
+            top_p_scalar = None
             new_ats_scales_list = None
             if temperatures is not None:
                 temp_value = temperatures[req_index]
-                new_temps_list = [temp_value] * len(generated_token_ids)
+                if (
+                    temperature_output_is_scalar is not None
+                    and temperature_output_is_scalar[req_index]
+                ):
+                    temp_scalar = temp_value
+                else:
+                    new_temps_list = [temp_value] * len(generated_token_ids)
             if top_ps is not None:
                 top_p_value = top_ps[req_index]
-                new_top_ps_list = [top_p_value] * len(generated_token_ids)
+                if top_p_output_is_scalar is not None and top_p_output_is_scalar[
+                    req_index
+                ]:
+                    top_p_scalar = top_p_value
+                else:
+                    new_top_ps_list = [top_p_value] * len(generated_token_ids)
             if ats_temperature_scales is not None:
                 ats_scale_value = ats_temperature_scales[req_index]
                 new_ats_scales_list = [ats_scale_value] * len(
@@ -1483,6 +1500,8 @@ class Scheduler(SchedulerInterface):
                         num_nans_in_logits=request.num_nans_in_logits,
                         temps=new_temps_list,
                         top_p=new_top_ps_list,
+                        temp_scalar=temp_scalar,
+                        top_p_scalar=top_p_scalar,
                         ats_temperature_scales=new_ats_scales_list,
                     )
                 )
