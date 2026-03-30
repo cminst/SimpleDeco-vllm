@@ -23,7 +23,6 @@ from .interfaces_base import (
 )
 from .registry import ModelRegistry
 from .ats import ATSModelForCausalLM
-from .autodeco import AutoDecoModelForCausalLM
 
 __all__ = [
     "ModelRegistry",
